@@ -18,7 +18,11 @@ import {
 export default function Workspace({ user, onLogout }) {
   const [selectedFile, setSelectedFile] = useState(null);
   const [searchQuery, setSearchQuery] = useState("");
-
+  const [isUploading, setIsUploading] = useState(false);
+  const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
+  const [uploadNote, setUploadNote] = useState("");
+  const [uploadFile, setUploadFile] = useState(null);
+  
   // Placeholder sample file showing the exact context note model
   const sampleFiles = [
     {
@@ -38,6 +42,42 @@ export default function Workspace({ user, onLogout }) {
     const sizes = ["B", "KB", "MB", "GB"];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + " " + sizes[i];
+  };
+
+  const handleUpload = async () => {
+    if (!uploadFile) {
+      alert("Please select a file to upload.");
+      return;
+    }
+    setIsUploading(true);
+    const formData = new FormData();
+    formData.append('file', uploadFile);
+    if (uploadNote) {
+      formData.append('contextNote', uploadNote);
+    }
+   
+    try {
+      const res = await fetch("http://localhost:5000/api/files/upload", {
+        method: 'POST',
+        credentials: 'include',
+        body: formData
+      });
+      if (!res.ok) {
+        throw new Error("Upload failed on Backend");
+      }
+      const data = await res.json();
+      console.log("Uploaded Successfully:", data);
+      
+      // Reset state on success
+      setIsUploading(false);
+      setUploadFile(null);
+      setUploadNote("");
+      setIsUploadModalOpen(false);
+    } catch (error) {
+      console.error("Error:", error);
+      setIsUploading(false);
+      alert("Failed to upload.");
+    }
   };
 
   return (
@@ -164,10 +204,62 @@ export default function Workspace({ user, onLogout }) {
               <p className="text-[11px] text-[#64748b]">Indexed with metadata and attached notes</p>
             </div>
 
-            <button className="h-8 px-3 rounded-md bg-[#38bdf8] hover:bg-[#7bd0ff] text-[#00354a] font-semibold text-xs flex items-center gap-1.5 transition-all shadow-sm">
+            <button onClick={() => setIsUploadModalOpen(true)} className="h-8 px-3 rounded-md bg-[#38bdf8] hover:bg-[#7bd0ff] text-[#00354a] font-semibold text-xs flex items-center gap-1.5 transition-all shadow-sm">
               <Plus className="w-3.5 h-3.5 stroke-[2.5]" />
               <span>Upload Document</span>
             </button>
+
+            {isUploadModalOpen && (
+              <div className="absolute inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50">
+                <div className="bg-[#12141a] rounded-xl p-6 w-[450px] border border-[#232732] shadow-2xl flex flex-col gap-4">
+                  <div className="flex justify-between items-center mb-2">
+                    <h2 className="text-white font-semibold text-lg">Upload New Document</h2>
+                  </div>
+                  
+                  {/* File Input */}
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-xs text-[#94a3b8] font-medium">Select File</label>
+                    <input 
+                      type="file" 
+                      onChange={(e) => setUploadFile(e.target.files[0])} 
+                      className="text-sm text-[#e3e2e6] file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-xs file:font-semibold file:bg-[#181b22] file:text-[#38bdf8] hover:file:bg-[#232732] cursor-pointer bg-[#0d0e11] border border-[#232732] rounded-md p-1" 
+                    />
+                  </div>
+
+                  {/* Context Note Input */}
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-xs text-[#94a3b8] font-medium">Context Note (Optional)</label>
+                    <textarea 
+                      placeholder="Why are you saving this? What's important about it?"
+                      value={uploadNote}
+                      onChange={(e) => setUploadNote(e.target.value)}
+                      className="w-full h-24 p-3 text-sm bg-[#0d0e11] border border-[#232732] rounded-md text-white placeholder-[#64748b] focus:outline-none focus:border-[#38bdf8] transition-colors resize-none"
+                    ></textarea>
+                  </div>
+                  
+                  {/* Action Buttons */}
+                  <div className="flex justify-end gap-3 mt-4 pt-4 border-t border-[#232732]">
+                    <button 
+                      onClick={() => {
+                        setIsUploadModalOpen(false);
+                        setUploadFile(null);
+                        setUploadNote("");
+                      }} 
+                      className="px-4 py-2 text-sm text-[#94a3b8] hover:text-white transition-colors font-medium"
+                    >
+                      Cancel
+                    </button>
+                    <button 
+                      onClick={handleUpload} 
+                      disabled={isUploading || !uploadFile}
+                      className="px-6 py-2 bg-[#38bdf8] hover:bg-[#7bd0ff] disabled:opacity-50 disabled:cursor-not-allowed text-[#00354a] font-semibold text-sm rounded-md transition-all shadow-sm flex items-center gap-2"
+                    >
+                      {isUploading ? "Uploading..." : "Confirm Upload"}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Catalog Content Area */}

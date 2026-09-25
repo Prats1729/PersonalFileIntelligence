@@ -28,8 +28,11 @@ app.get("/api/health", (req, res) => {
   res.json({ status: "healthy", timestamp: new Date().toISOString() });
 });
 
+import fileRoutes from "./routes/fileRoutes.js";
+
 // 4. Mount API Routes
 app.use("/api/auth", authRoutes);
+app.use("/api/files", fileRoutes);
 
 // 5. Centralized Error Handler
 app.use((err, req, res, next) => {
