@@ -29,3 +29,16 @@ export async function getFilesByUser(userId) {
   const res = await query("SELECT * FROM files WHERE user_id = $1 ORDER BY created_at DESC", [userId]);
   return res.rows;
 }
+
+
+export async function deleteFileRecord(userId, fileId){
+    const deleteSql = "DELETE FROM files WHERE user_id = $1 AND id = $2 RETURNING *;";
+    const res = await query(deleteSql, [userId, fileId]);
+    return res.rows[0];
+}
+
+export async function getFileRecord(userId, fileId){
+  const selectSql = "SELECT * FROM files WHERE user_id = $1 AND id = $2";
+  const res = await query(selectSql, [userId, fileId]);
+  return res.rows[0];
+}

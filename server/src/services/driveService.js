@@ -37,3 +37,12 @@ export async function uploadFileToDrive(refreshToken, file){
     })
     return response.data;
 }
+
+// Delete files from users drive
+export async function deleteFileFromDrive(refreshToken, driveFileId){
+    const drive = getDriveClient(refreshToken);
+
+    await drive.files.delete({
+        fileId: driveFileId
+    });
+}
