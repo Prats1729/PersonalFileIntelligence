@@ -25,6 +25,7 @@ export default function Workspace({ user, onLogout }) {
   const [uploadFiles, setUploadFiles] = useState([]);
   const [files, setFiles] = useState([]);
   const [isDragOver, setIsDragOver] = useState(false);
+  const [selectedIds, setSelectedIds] = useState([]);
 
   const fetchFiles = async () => {
     try {
@@ -48,17 +49,24 @@ export default function Workspace({ user, onLogout }) {
   }, []);
 
   // Close upload modal on Escape key
-  useEffect(() => {
-    const handleEscape = (e) => {
-      if (e.key === "Escape" && isUploadModalOpen) {
-        setIsUploadModalOpen(false);
-        setUploadFiles([]);
-        setUploadNote("");
-      }
-    };
-    window.addEventListener("keydown", handleEscape);
-    return () => window.removeEventListener("keydown", handleEscape);
-  }, [isUploadModalOpen]);
+    useEffect(() => {
+      const handleEscape = (e) => {
+        if (e.key === "Escape") {
+          // If the modal is open, close it
+          if (isUploadModalOpen) {
+            setIsUploadModalOpen(false);
+            setUploadFiles([]);
+            setUploadNote("");
+          }
+
+          // Always clear the multi-selection if Escape is pressed
+          setSelectedIds([]);
+        }
+      };
+      window.addEventListener("keydown", handleEscape);
+      return () => window.removeEventListener("keydown", handleEscape);
+    }, [isUploadModalOpen, selectedIds]);
+
 
   const formatBytes = (bytes) => {
     if (bytes === 0) return "0 B";
@@ -133,6 +141,34 @@ export default function Workspace({ user, onLogout }) {
     }
   };
 
+    const handleBulkDelete = async () => {
+      try {
+        // 1. Loop through all selected IDs and delete them on the backend
+        for (const id of selectedIds) {
+          const res = await fetch(`http://localhost:5000/api/files/${id}`, {
+            method: "DELETE",
+            credentials: "include",
+          });
+          if (!res.ok) {
+            throw new Error(`Failed to delete file ${id}`);
+          }
+        }
+
+        // 2. Remove them from the frontend state
+        setFiles((prev) =>
+          prev.filter((file) => !selectedIds.includes(file.id)),
+        );
+
+        // 3. Clean up the UI
+        setSelectedIds([]);
+        console.log("Bulk delete successful!");
+      } catch (error) {
+        console.error("Error during bulk delete:", error);
+        alert("Failed to delete some files.");
+      }
+    };
+
+
   const handleDragOver = (e) => {
     e.preventDefault();
     setIsDragOver(true);
@@ -152,6 +188,20 @@ export default function Workspace({ user, onLogout }) {
     }
   };
 
+  const handleCardClick = (e, file) =>{
+    if (e.metaKey || e.ctrlKey){
+      if (!selectedIds.includes(file.id)){
+        setSelectedIds([...selectedIds, file.id]);
+      }
+      else{
+        setSelectedIds(selectedIds.filter((id) => id !== file.id))
+      }
+    }
+    else {
+      setSelectedFile(file);
+      setSelectedIds([]);
+    }
+  }
 
   return (
     <div className="h-screen flex flex-col bg-[#0d0e11] text-[#e3e2e6] overflow-hidden selection:bg-[#38bdf8] selection:text-[#0d0e11]">
@@ -394,6 +444,35 @@ export default function Workspace({ user, onLogout }) {
               </div>
             )}
           </div>
+          {/* Batch Action Bar */}
+          {selectedIds.length > 0 && (
+            <div className="h-12 px-6 border-b border-[#38bdf8]/30 bg-[#38bdf8]/5 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="flex items-center justify-center w-5 h-5 rounded bg-[#38bdf8] text-[#0d0e11] text-xs font-bold">
+                  {selectedIds.length}
+                </div>
+                <span className="text-xs font-medium text-[#38bdf8]">
+                  Files Selected
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setSelectedIds([])}
+                  className="px-3 py-1.5 rounded hover:bg-[#181b22] text-xs text-[#94a3b8] transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  // We will wire this up next!
+                  onClick={handleBulkDelete}
+                  className="flex items-center gap-2 px-3 py-1.5 rounded bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-red-400 text-xs font-medium transition-colors"
+                >
+                  <Trash className="w-3.5 h-3.5" />
+                  <span>Delete Selected</span>
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* Catalog Content Area */}
           <div className="p-6 flex-1">
@@ -418,9 +497,10 @@ export default function Workspace({ user, onLogout }) {
                 {files.map((file) => (
                   <div
                     key={file.id}
-                    onClick={handleCardClick}
+                    onClick={(e) => handleCardClick(e, file)}
                     className={`flex flex-col h-full p-4 rounded-lg bg-[#12141a] border transition-all cursor-pointer ${
-                      selectedFile?.id === file.id
+                      selectedFile?.id === file.id ||
+                      selectedIds.includes(file.id)
                         ? "border-[#38bdf8] shadow-md shadow-[#38bdf8]/10"
                         : "border-[#232732] hover:border-[#2e3442] hover:bg-[#181b22]/50"
                     }`}
