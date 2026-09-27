@@ -17,7 +17,6 @@ import {
 } from "lucide-react";
 
 export default function Workspace({ user, onLogout }) {
-  const [selectedFile, setSelectedFile] = useState(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [isUploading, setIsUploading] = useState(false);
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
@@ -26,6 +25,7 @@ export default function Workspace({ user, onLogout }) {
   const [files, setFiles] = useState([]);
   const [isDragOver, setIsDragOver] = useState(false);
   const [selectedIds, setSelectedIds] = useState([]);
+  const selectedFile = selectedIds.length === 1 ? files.find((f) => f.id === selectedIds[0]) : null;
 
   const fetchFiles = async () => {
     try {
@@ -198,8 +198,7 @@ export default function Workspace({ user, onLogout }) {
       }
     }
     else {
-      setSelectedFile(file);
-      setSelectedIds([]);
+      setSelectedIds([file.id]);
     }
   }
 
@@ -499,7 +498,6 @@ export default function Workspace({ user, onLogout }) {
                     key={file.id}
                     onClick={(e) => handleCardClick(e, file)}
                     className={`flex flex-col h-full p-4 rounded-lg bg-[#12141a] border transition-all cursor-pointer ${
-                      selectedFile?.id === file.id ||
                       selectedIds.includes(file.id)
                         ? "border-[#38bdf8] shadow-md shadow-[#38bdf8]/10"
                         : "border-[#232732] hover:border-[#2e3442] hover:bg-[#181b22]/50"
