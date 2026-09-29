@@ -1,4 +1,5 @@
 import React, { useState, useEffect} from "react";
+import { Toaster, toast } from "react-hot-toast";
 import {
   HardDrive,
   Search,
@@ -25,7 +26,32 @@ export default function Workspace({ user, onLogout }) {
   const [files, setFiles] = useState([]);
   const [isDragOver, setIsDragOver] = useState(false);
   const [selectedIds, setSelectedIds] = useState([]);
-  const selectedFile = selectedIds.length === 1 ? files.find((f) => f.id === selectedIds[0]) : null;
+  const selectedFile =
+    selectedIds.length === 1
+      ? files.find((f) => f.id === selectedIds[0])
+      : null;
+  const [activeScope, setActiveScope] = useState("All files");
+
+  // This runs every time the component renders (like when the user types a letter)
+  const filteredFiles = files.filter((file) => {
+    // 1. Check if it matches the Search Query (check both original_name and context_note)
+    const matchesSearch =
+      file.original_name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (file.context_note &&
+        file.context_note.toLowerCase().includes(searchQuery.toLowerCase()));
+
+    // 2. Check if it matches the Active Scope
+    let matchesScope = true;
+    if (activeScope === "Documents") {
+      // Check if file.mime_type includes 'pdf' or 'document' (like word docs)
+      matchesScope = file.mime_type?.includes('pdf') || file.mime_type?.includes('document') || file.mime_type?.includes('text');
+    } else if (activeScope === "Images") {
+      // Check if file.mime_type includes 'image'
+      matchesScope = file.mime_type?.includes('image');
+    }
+
+    return matchesSearch && matchesScope;
+  });
 
   const fetchFiles = async () => {
     try {
@@ -49,24 +75,23 @@ export default function Workspace({ user, onLogout }) {
   }, []);
 
   // Close upload modal on Escape key
-    useEffect(() => {
-      const handleEscape = (e) => {
-        if (e.key === "Escape") {
-          // If the modal is open, close it
-          if (isUploadModalOpen) {
-            setIsUploadModalOpen(false);
-            setUploadFiles([]);
-            setUploadNote("");
-          }
-
-          // Always clear the multi-selection if Escape is pressed
-          setSelectedIds([]);
+  useEffect(() => {
+    const handleEscape = (e) => {
+      if (e.key === "Escape") {
+        // If the modal is open, close it
+        if (isUploadModalOpen) {
+          setIsUploadModalOpen(false);
+          setUploadFiles([]);
+          setUploadNote("");
         }
-      };
-      window.addEventListener("keydown", handleEscape);
-      return () => window.removeEventListener("keydown", handleEscape);
-    }, [isUploadModalOpen, selectedIds]);
 
+        // Always clear the multi-selection if Escape is pressed
+        setSelectedIds([]);
+      }
+    };
+    window.addEventListener("keydown", handleEscape);
+    return () => window.removeEventListener("keydown", handleEscape);
+  }, [isUploadModalOpen, selectedIds]);
 
   const formatBytes = (bytes) => {
     if (bytes === 0) return "0 B";
@@ -78,7 +103,7 @@ export default function Workspace({ user, onLogout }) {
 
   const handleUpload = async () => {
     if (uploadFiles.length === 0) {
-      alert("Please select a file to upload.");
+      toast.error("Please select a file to upload.");
       return;
     }
     setIsUploading(true);
@@ -111,7 +136,7 @@ export default function Workspace({ user, onLogout }) {
     } catch (error) {
       console.error("Error:", error);
       setIsUploading(false);
-      alert("Failed to upload.");
+      toast.error("Failed to upload. Please try again!");
     }
   };
 
@@ -134,40 +159,51 @@ export default function Workspace({ user, onLogout }) {
         setSelectedFile(null);
       }
 
-      console.log("Deleted Successfully");
+      toast.success("Deleted Successfully");
     } catch (error) {
       console.error("Error deleting file:", error);
-      alert("Failed to delete file.");
+      toast.error("Failed to delete file. Please try again!");
     }
   };
 
-    const handleBulkDelete = async () => {
+  const handleBulkDelete = async () => {
+    // keeping track of all the that were succesfully deleted
+    const successfullyDeletedIds = [];
+
+    // 2. Loop through all selected IDs
+    for (const id of selectedIds) {
+      // 3. Put a try/catch INSIDE the loop so one failure doesn't stop the rest!
       try {
-        // 1. Loop through all selected IDs and delete them on the backend
-        for (const id of selectedIds) {
-          const res = await fetch(`http://localhost:5000/api/files/${id}`, {
-            method: "DELETE",
-            credentials: "include",
-          });
-          if (!res.ok) {
-            throw new Error(`Failed to delete file ${id}`);
-          }
+        const res = await fetch(`http://localhost:5000/api/files/${id}`, {
+          method: "DELETE",
+          credentials: "include",
+        });
+
+        if (!res.ok) {
+          throw new Error(`Failed to delete file ${id}`);
         }
 
-        // 2. Remove them from the frontend state
-        setFiles((prev) =>
-          prev.filter((file) => !selectedIds.includes(file.id)),
-        );
-
-        // 3. Clean up the UI
-        setSelectedIds([]);
-        console.log("Bulk delete successful!");
-      } catch (error) {
-        console.error("Error during bulk delete:", error);
-        alert("Failed to delete some files.");
+        // If we make it here, it succeeded! Add it to our tracking array
+        successfullyDeletedIds.push(id);
+      } catch (err) {
+        // This only catches the error for THIS specific file.
+        // The loop will automatically continue to the next file!
+        console.error(err);
       }
-    };
+    }
+    // 4. Now, only remove the files from the UI that actually succeeded
+    setFiles((prev) =>
+      prev.filter((file) => !successfullyDeletedIds.includes(file.id)),
+    );
+    // 5. Clean up the UI selection
+    setSelectedIds([]);
 
+    if (successfullyDeletedIds.length < selectedIds.length) {
+      toast.error("Some files could not be deleted. Please try again!");
+    } else {
+      toast.success("Files deleted successfully!");
+    }
+  };
 
   const handleDragOver = (e) => {
     e.preventDefault();
@@ -188,22 +224,31 @@ export default function Workspace({ user, onLogout }) {
     }
   };
 
-  const handleCardClick = (e, file) =>{
-    if (e.metaKey || e.ctrlKey){
-      if (!selectedIds.includes(file.id)){
+  const handleCardClick = (e, file) => {
+    if (e.metaKey || e.ctrlKey) {
+      if (!selectedIds.includes(file.id)) {
         setSelectedIds([...selectedIds, file.id]);
+      } else {
+        setSelectedIds(selectedIds.filter((id) => id !== file.id));
       }
-      else{
-        setSelectedIds(selectedIds.filter((id) => id !== file.id))
-      }
-    }
-    else {
+    } else {
       setSelectedIds([file.id]);
     }
-  }
+  };
 
   return (
     <div className="h-screen flex flex-col bg-[#0d0e11] text-[#e3e2e6] overflow-hidden selection:bg-[#38bdf8] selection:text-[#0d0e11]">
+      <Toaster
+        position="bottom-right"
+        toastOptions={{
+          style: {
+            background: "#181b22",
+            color: "#e3e2e6",
+            border: "1px solid #232732",
+            fontSize: "14px",
+          },
+        }}
+      />
       {/* Top App Bar */}
       <header className="h-12 border-b border-[#232732] bg-[#12141a] px-4 flex items-center justify-between flex-shrink-0 z-20">
         {/* Brand */}
@@ -277,15 +322,38 @@ export default function Workspace({ user, onLogout }) {
                 Library Scopes
               </p>
               <nav className="space-y-0.5">
-                <button className="w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded text-xs font-medium bg-[#181b22] text-[#38bdf8] border border-[#2e3442]/60">
+                <button
+                  onClick={() => setActiveScope("All files")}
+                  className={`w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded text-xs transition-colors ${
+                    activeScope === "All files"
+                      ? "font-medium bg-[#181b22] text-[#38bdf8] border border-[#2e3442]/60"
+                      : "text-[#94a3b8] hover:text-white hover:bg-[#181b22]/50 border border-transparent"
+                  }`}
+                >
                   <Folder className="w-3.5 h-3.5" />
                   <span>All Files</span>
                 </button>
-                <button className="w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded text-xs text-[#94a3b8] hover:text-white hover:bg-[#181b22]/50 transition-colors">
+
+                <button
+                  onClick={() => setActiveScope("Documents")}
+                  className={`w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded text-xs transition-colors ${
+                    activeScope === "Documents"
+                      ? "font-medium bg-[#181b22] text-[#38bdf8] border border-[#2e3442]/60"
+                      : "text-[#94a3b8] hover:text-white hover:bg-[#181b22]/50 border border-transparent"
+                  }`}
+                >
                   <FileText className="w-3.5 h-3.5" />
                   <span>Documents</span>
                 </button>
-                <button className="w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded text-xs text-[#94a3b8] hover:text-white hover:bg-[#181b22]/50 transition-colors">
+
+                <button
+                  onClick={() => setActiveScope("Images")}
+                  className={`w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded text-xs transition-colors ${
+                    activeScope === "Images"
+                      ? "font-medium bg-[#181b22] text-[#38bdf8] border border-[#2e3442]/60"
+                      : "text-[#94a3b8] hover:text-white hover:bg-[#181b22]/50 border border-transparent"
+                  }`}
+                >
                   <ImageIcon className="w-3.5 h-3.5" />
                   <span>Images</span>
                 </button>
@@ -409,6 +477,10 @@ export default function Workspace({ user, onLogout }) {
                         onChange={(e) => setUploadNote(e.target.value)}
                         className="w-full h-24 p-3 text-sm bg-[#181b22] border border-[#2e3442] rounded-lg text-white placeholder-[#64748b] focus:outline-none focus:border-[#38bdf8] focus:ring-1 focus:ring-[#38bdf8] transition-all resize-none shadow-inner"
                       ></textarea>
+                      <p className="text-[10px] text-[#64748b] italic mt-1 text-center">
+                        * Actions may take ~5 seconds if the database is waking
+                        up from sleep.
+                      </p>
                     </div>
                   </div>
 
@@ -432,7 +504,7 @@ export default function Workspace({ user, onLogout }) {
                       {isUploading ? (
                         <>
                           <div className="w-3.5 h-3.5 border-2 border-[#00354a] border-t-transparent rounded-full animate-spin"></div>
-                          Uploading...
+                          Uploading (Waking DB...)
                         </>
                       ) : (
                         "Confirm Upload"
@@ -493,7 +565,7 @@ export default function Workspace({ user, onLogout }) {
               </div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {files.map((file) => (
+                {filteredFiles.map((file) => (
                   <div
                     key={file.id}
                     onClick={(e) => handleCardClick(e, file)}

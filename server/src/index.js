@@ -3,6 +3,7 @@ import cors from "cors";
 import cookieParser from "cookie-parser";
 import dotenv from "dotenv";
 import authRoutes from "./routes/authRoutes.js";
+import { startSyncJob } from "./services/syncService.js";
 
 dotenv.config();
 
@@ -39,6 +40,9 @@ app.use((err, req, res, next) => {
   console.error("Unhandled error:", err);
   res.status(500).json({ error: "Internal server error" });
 });
+
+// start the background sync job
+startSyncJob();
 
 // 6. Start Server
 app.listen(PORT, () => {

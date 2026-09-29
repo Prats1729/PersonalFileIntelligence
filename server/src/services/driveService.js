@@ -2,7 +2,7 @@ import {google} from "googleapis"
 import {Readable} from "stream"
 
 // creates an authenticated GDrive client for a specific user using theit stored refresh token
-function getDriveClient(refreshToken){
+export function getDriveClient(refreshToken){
     const auth = new google.auth.OAuth2(
         process.env.GOOGLE_CLIENT_ID,
         process.env.GOOGLE_CLIENT_SECRET,
