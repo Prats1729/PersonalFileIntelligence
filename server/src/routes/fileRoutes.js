@@ -1,8 +1,9 @@
 import express from "express";
 import multer from "multer";
 import { requireAuth } from "../middleware/authMiddleware.js";
-import { uploadFileToDrive, deleteFileFromDrive } from "../services/driveService.js";
+import { uploadFileToDrive, deleteFileFromDrive, getDriveFolders, createDriveFolder, moveFileToFolder } from "../services/driveService.js";
 import { getUserById, saveFileRecord, getFilesByUser, deleteFileRecord, getFileRecord } from "../services/fileService.js";
+import {categorizeFile} from "../services/aiService.js"
 
 const router = express.Router();
 // Use memory storage for multer since we stream to Drive
@@ -26,6 +27,7 @@ router.post("/upload", requireAuth, upload.array("files"), async (req, res) => {
     }
 
     const savedFiles = [];
+    let existingFolders = await getDriveFolders(user.google_refresh_token);
 
     for await (const file of req.files){
       // 2. Upload to Google Drive
@@ -33,6 +35,70 @@ router.post("/upload", requireAuth, upload.array("files"), async (req, res) => {
       // 3. Save to database
       const fileRecord = await saveFileRecord(userId, driveMetadata, file, contextNote);
       savedFiles.push(fileRecord);
+
+      const aiResultFolder = await categorizeFile(
+        file.originalname,
+        file.mimetype,
+        contextNote,
+        existingFolders
+      );
+
+      // handling 3 main scenarios
+
+      // if the folder does exist in the preexisting array
+      if (
+        aiResultFolder.chosenExistingFolder &&
+        !aiResultFolder.suggestedNewFolder &&
+        existingFolders.find(
+          (f) => f.name === aiResultFolder.chosenExistingFolder,
+        )
+      ) {
+        const folder = existingFolders.find(
+          (f) => f.name === aiResultFolder.chosenExistingFolder,
+        );
+
+        await moveFileToFolder(
+          user.google_refresh_token,
+          driveMetadata.id,
+          folder.id,
+        );
+      }
+      // if it suggests new folder
+      else if (aiResultFolder.suggestedNewFolder) {
+        const folder = await createDriveFolder(
+          user.google_refresh_token,
+          aiResultFolder.suggestedNewFolder,
+        );
+        await moveFileToFolder(
+          user.google_refresh_token,
+          driveMetadata.id,
+          folder.id,
+        );
+        // add the folder to our list so it is available for the next iteration
+        existingFolders.push(folder);
+      }
+      // if the file doesn't belong to any folder, create an others folder
+      else {
+        if (existingFolders.find((f) => f.name === "Others")) {
+          const folder = existingFolders.find((f) => f.name === "Others");
+          await moveFileToFolder(
+            user.google_refresh_token,
+            driveMetadata.id,
+            folder.id,
+          );
+        } else {
+          const folder = await createDriveFolder(
+            user.google_refresh_token,
+            "Others",
+          );
+          await moveFileToFolder(
+            user.google_refresh_token,
+            driveMetadata.id,
+            folder.id,
+          );
+          existingFolders.push(folder);
+        }
+      }
     }
 
     res.status(201).json({

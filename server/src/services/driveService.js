@@ -46,3 +46,39 @@ export async function deleteFileFromDrive(refreshToken, driveFileId){
         fileId: driveFileId
     });
 }
+
+export async function getDriveFolders(refreshToken){
+    const drive = getDriveClient(refreshToken);
+    const response = await drive.files.list({
+        q: "mimeType='application/vnd.google-apps.folder' and trashed=false",
+        fields: "files(id, name)",
+    })
+    return response.data.files;
+}
+
+// Creates a new folder in Google Drive
+export async function createDriveFolder(refreshToken, folderName) {
+  const drive = getDriveClient(refreshToken);
+  const response = await drive.files.create({
+    requestBody: {
+      name: folderName,
+      mimeType: "application/vnd.google-apps.folder",
+    },
+    fields: "id, name",
+  });
+  return response.data;
+}
+// Moves a file into a specific folder
+export async function moveFileToFolder(refreshToken, fileId, folderId) {
+  const drive = getDriveClient(refreshToken);
+  
+  // To move a file, we have to fetch its current parents, then add the new parent and remove the old ones
+  const file = await drive.files.get({ fileId: fileId, fields: "parents" });
+  const previousParents = file.data.parents ? file.data.parents.join(",") : "";
+  await drive.files.update({
+    fileId: fileId,
+    addParents: folderId,
+    removeParents: previousParents,
+    fields: "id, parents",
+  });
+}
