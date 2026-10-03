@@ -6,28 +6,26 @@ import { fileURLToPath } from "url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Path to the migration file:
-const migrationPath = path.join(__dirname, "migrations", "001_init.sql");
-const sql = fs.readFileSync(migrationPath, "utf8");
-
+// Path to the migration directory:
+const migrationsDir = path.join(__dirname, "migrations");
+const files = fs.readdirSync(migrationsDir).filter(f => f.endsWith(".sql")).sort();
 
 async function runMigrations() {
-  // A. Checkout a single dedicated connection from our pool.
-  // We need one dedicated connection so our BEGIN and COMMIT happen on the SAME socket.
   const client = await pool.connect();
 
-  try{
-    console.log("Running migration: 001_init.sql...");
-
+  try {
     // B. Start a transaction.
-  await client.query("BEGIN");
+    await client.query("BEGIN");
 
-  // C. Execute the SQL.
-  await client.query(sql);
+    for (const file of files) {
+      console.log(`Running migration: ${file}...`);
+      const sql = fs.readFileSync(path.join(migrationsDir, file), "utf8");
+      await client.query(sql);
+    }
 
-  // D. If we get here → SUCCESS → commit.
-  await client.query("COMMIT");
-  console.log("✅ Migration completed succesfully! Tables created.");
+    // D. If we get here → SUCCESS → commit.
+    await client.query("COMMIT");
+    console.log("✅ All migrations completed succesfully!");
 
   }catch (error){
     // if any error then undo changes

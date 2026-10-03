@@ -26,7 +26,10 @@ export default function App() {
       });
   }, []);
 
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
+
   const handleLogout = async () => {
+    setIsLoggingOut(true);
     try {
       await fetch("http://localhost:5000/api/auth/logout", {
         method: "POST",
@@ -35,6 +38,8 @@ export default function App() {
       setUser(null);
     } catch (err) {
       console.error("Failed to logout:", err);
+    } finally {
+      setIsLoggingOut(false);
     }
   };
 
@@ -48,7 +53,7 @@ export default function App() {
   }
 
   return user ? (
-    <Workspace user={user} onLogout={handleLogout} />
+    <Workspace user={user} onLogout={handleLogout} isLoggingOut={isLoggingOut} />
   ) : (
     <AuthScreen />
   );

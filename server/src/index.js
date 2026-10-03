@@ -30,10 +30,12 @@ app.get("/api/health", (req, res) => {
 });
 
 import fileRoutes from "./routes/fileRoutes.js";
+import chatRoutes from "./routes/chatRoutes.js";
 
 // 4. Mount API Routes
 app.use("/api/auth", authRoutes);
 app.use("/api/files", fileRoutes);
+app.use("/api/chat", chatRoutes);
 
 // 5. Centralized Error Handler
 app.use((err, req, res, next) => {

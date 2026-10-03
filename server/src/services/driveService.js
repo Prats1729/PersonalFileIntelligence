@@ -82,3 +82,15 @@ export async function moveFileToFolder(refreshToken, fileId, folderId) {
     fields: "id, parents",
   });
 }
+
+export async function downloadFileBuffer(refreshToken, fileId) {
+  const drive = getDriveClient(refreshToken);
+
+  // We use alt: 'media' to tell Google we want the actual file, not the metadata
+  const response = await drive.files.get(
+    { fileId: fileId, alt: "media" },
+    { responseType: "arraybuffer" }, // This tells Node to expect raw binary data!
+  );
+
+  return Buffer.from(response.data);
+}

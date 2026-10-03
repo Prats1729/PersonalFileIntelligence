@@ -21,6 +21,8 @@
     "jsonwebtoken": "^9.0.3",
     "multer": "^2.4.0",
     "node-cron": "^4.6.0",
+    "openai": "^7.27.0",
+    "pdf-parse": "^2.4.5",
     "pg": "^8.23.0"
   }
 }

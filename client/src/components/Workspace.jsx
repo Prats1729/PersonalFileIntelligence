@@ -17,13 +17,15 @@ import {
   Trash
 } from "lucide-react";
 
-export default function Workspace({ user, onLogout }) {
+export default function Workspace({ user, onLogout, isLoggingOut }) {
   const [searchQuery, setSearchQuery] = useState("");
   const [isUploading, setIsUploading] = useState(false);
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
   const [uploadNote, setUploadNote] = useState("");
   const [uploadFiles, setUploadFiles] = useState([]);
   const [files, setFiles] = useState([]);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [isDeletingBulk, setIsDeletingBulk] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
   const [selectedIds, setSelectedIds] = useState([]);
   const selectedFile =
@@ -141,6 +143,7 @@ export default function Workspace({ user, onLogout }) {
   };
 
   const handleFileDelete = async (fileId) => {
+    setIsDeleting(true);
     try {
       const res = await fetch(`http://localhost:5000/api/files/${fileId}`, {
         method: "DELETE",
@@ -163,10 +166,13 @@ export default function Workspace({ user, onLogout }) {
     } catch (error) {
       console.error("Error deleting file:", error);
       toast.error("Failed to delete file. Please try again!");
+    } finally {
+      setIsDeleting(false);
     }
   };
 
   const handleBulkDelete = async () => {
+    setIsDeletingBulk(true);
     // keeping track of all the that were succesfully deleted
     const successfullyDeletedIds = [];
 
@@ -203,6 +209,7 @@ export default function Workspace({ user, onLogout }) {
     } else {
       toast.success("Files deleted successfully!");
     }
+    setIsDeletingBulk(false);
   };
 
   const handleDragOver = (e) => {
@@ -303,10 +310,15 @@ export default function Workspace({ user, onLogout }) {
             {/* Logout Button */}
             <button
               onClick={onLogout}
+              disabled={isLoggingOut}
               title="Sign Out"
-              className="p-1.5 rounded text-[#94a3b8] hover:text-white hover:bg-[#181b22] transition-colors"
+              className="p-1.5 rounded text-[#94a3b8] hover:text-white hover:bg-[#181b22] transition-colors disabled:opacity-50 flex items-center justify-center"
             >
-              <LogOut className="w-4 h-4" />
+              {isLoggingOut ? (
+                <div className="w-4 h-4 border-2 border-[#94a3b8] border-t-transparent rounded-full animate-spin"></div>
+              ) : (
+                <LogOut className="w-4 h-4" />
+              )}
             </button>
           </div>
         </div>
@@ -478,8 +490,7 @@ export default function Workspace({ user, onLogout }) {
                         className="w-full h-24 p-3 text-sm bg-[#181b22] border border-[#2e3442] rounded-lg text-white placeholder-[#64748b] focus:outline-none focus:border-[#38bdf8] focus:ring-1 focus:ring-[#38bdf8] transition-all resize-none shadow-inner"
                       ></textarea>
                       <p className="text-[10px] text-[#64748b] italic mt-1 text-center">
-                        * Actions may take ~5 seconds if the database is waking
-                        up from sleep.
+                        * Note: If the database is asleep, the first upload attempt might fail. Just try again!
                       </p>
                     </div>
                   </div>
@@ -504,7 +515,7 @@ export default function Workspace({ user, onLogout }) {
                       {isUploading ? (
                         <>
                           <div className="w-3.5 h-3.5 border-2 border-[#00354a] border-t-transparent rounded-full animate-spin"></div>
-                          Uploading (Waking DB...)
+                          Uploading & Categorizing...
                         </>
                       ) : (
                         "Confirm Upload"
@@ -534,12 +545,16 @@ export default function Workspace({ user, onLogout }) {
                   Cancel
                 </button>
                 <button
-                  // We will wire this up next!
                   onClick={handleBulkDelete}
-                  className="flex items-center gap-2 px-3 py-1.5 rounded bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-red-400 text-xs font-medium transition-colors"
+                  disabled={isDeletingBulk}
+                  className="flex items-center gap-2 px-3 py-1.5 rounded bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-red-400 text-xs font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  <Trash className="w-3.5 h-3.5" />
-                  <span>Delete Selected</span>
+                  {isDeletingBulk ? (
+                    <div className="w-3.5 h-3.5 border-2 border-red-400 border-t-transparent rounded-full animate-spin"></div>
+                  ) : (
+                    <Trash className="w-3.5 h-3.5" />
+                  )}
+                  <span>{isDeletingBulk ? "Deleting..." : "Delete Selected"}</span>
                 </button>
               </div>
             </div>
@@ -678,10 +693,15 @@ export default function Workspace({ user, onLogout }) {
 
                 <button
                   onClick={() => handleFileDelete(selectedFile.id)}
-                  className="w-full h-8 flex items-center justify-center gap-2 rounded bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-red-400 hover:text-red-300 text-xs font-semibold transition-colors"
+                  disabled={isDeleting}
+                  className="w-full h-8 flex items-center justify-center gap-2 rounded bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-red-400 hover:text-red-300 text-xs font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  <Trash className="w-3.5 h-3.5" />
-                  <span>Delete File</span>
+                  {isDeleting ? (
+                    <div className="w-3.5 h-3.5 border-2 border-red-400 border-t-transparent rounded-full animate-spin"></div>
+                  ) : (
+                    <Trash className="w-3.5 h-3.5" />
+                  )}
+                  <span>{isDeleting ? "Deleting..." : "Delete File"}</span>
                 </button>
               </div>
             </div>
