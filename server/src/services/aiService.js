@@ -86,3 +86,16 @@ export async function chatWithAI(messages) {
   });
 }
 
+export async function generateChatTitle(firstMessage) {
+  return withRetry(async () => {
+    const response = await openai.chat.completions.create({
+      model: "openrouter/auto",
+      messages: [
+        { role: "system", content: "You are a helpful assistant. Generate a very short, concise title (max 4 words) summarizing the user's message. DO NOT wrap the title in quotes. Respond with ONLY the title and nothing else." },
+        { role: "user", content: firstMessage }
+      ],
+    });
+    return response.choices[0].message.content.trim();
+  });
+}
+

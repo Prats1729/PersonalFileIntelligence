@@ -23,3 +23,11 @@ export async function createChat(userId, title = "New Chat"){
     );
     return result.rows[0];
 }
+
+export async function updateChatTitle(chatId, title){
+    const result = await query(
+        "UPDATE chats SET title = $1 WHERE id = $2 RETURNING *", 
+        [title, chatId]
+    );
+    return result.rows[0];
+}

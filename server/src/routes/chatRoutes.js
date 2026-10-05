@@ -5,8 +5,9 @@ import {
   getChatMessages,
   saveMessage,
   createChat,
+  updateChatTitle
 } from "../services/chatService.js";
-import { chatWithAI } from "../services/aiService.js";
+import { chatWithAI, generateChatTitle } from "../services/aiService.js";
 import { getUserById, getFileRecord } from "../services/fileService.js";
 import { downloadFileBuffer } from "../services/driveService.js";
 import { extractTextFromBuffer } from "../services/extractionService.js";
@@ -49,6 +50,15 @@ router.post("/:chatId", requireAuth, async (req, res) => {
 
     // STEP 2: Fetch the entire chat history
     const history = await getChatMessages(chatId);
+
+    // --- STEP 2.5: BACKGROUND TITLE GENERATION ---
+    if (history.length === 1) {
+      // Fire-and-forget! We don't await this so it doesn't slow down the response
+      generateChatTitle(message).then(async (title) => {
+        console.log(`Auto-generated title: ${title}`);
+        await updateChatTitle(chatId, title);
+      }).catch(err => console.error("Failed to generate title", err));
+    }
 
     // STEP 3: Format the history for OpenRouter (Map "ai" to "assistant")
     const formattedHistory = history.map((msg) => ({
