@@ -42,3 +42,14 @@ export async function getFileRecord(userId, fileId){
   const res = await query(selectSql, [userId, fileId]);
   return res.rows[0];
 }
+
+export async function updateFileFolder(fileId, folderName) {
+  const updateSql = `
+    UPDATE files 
+    SET ai_result_folder = $1 
+    WHERE id = $2 
+    RETURNING *;
+  `;
+  const result = await query(updateSql, [folderName, fileId]);
+  return result.rows[0];
+}

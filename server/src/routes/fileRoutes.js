@@ -2,7 +2,7 @@ import express from "express";
 import multer from "multer";
 import { requireAuth } from "../middleware/authMiddleware.js";
 import { uploadFileToDrive, deleteFileFromDrive, getDriveFolders, createDriveFolder, moveFileToFolder } from "../services/driveService.js";
-import { getUserById, saveFileRecord, getFilesByUser, deleteFileRecord, getFileRecord } from "../services/fileService.js";
+import { getUserById, saveFileRecord, getFilesByUser, deleteFileRecord, getFileRecord, updateFileFolder } from "../services/fileService.js";
 import {categorizeFile} from "../services/aiService.js"
 
 const router = express.Router();
@@ -99,6 +99,23 @@ router.post("/upload", requireAuth, upload.array("files"), async (req, res) => {
           existingFolders.push(folder);
         }
       }
+      // 4. Update local DB with the selected folder
+      let finalFolderName = "Others";
+      if (
+        aiResultFolder.chosenExistingFolder &&
+        !aiResultFolder.suggestedNewFolder &&
+        existingFolders.find(
+          (f) => f.name === aiResultFolder.chosenExistingFolder,
+        )
+      ) {
+         finalFolderName = aiResultFolder.chosenExistingFolder;
+      } else if (aiResultFolder.suggestedNewFolder) {
+         finalFolderName = aiResultFolder.suggestedNewFolder;
+      }
+      
+      const updatedRecord = await updateFileFolder(fileRecord.id, finalFolderName);
+      // Replace the record in savedFiles so the frontend gets the new folder immediately
+      savedFiles[savedFiles.length - 1] = updatedRecord;
     }
 
     res.status(201).json({

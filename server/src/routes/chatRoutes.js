@@ -56,7 +56,7 @@ router.post("/:chatId", requireAuth, async (req, res) => {
       content: msg.content,
     }));
 
-    const { message, mentionedFileIds } = req.body;
+    const { mentionedFileIds } = req.body;
     // --- STEP 3.5: THE MIDDLEMAN INJECTION ---
     if (mentionedFileIds && mentionedFileIds.length > 0) {
       console.log(
@@ -71,12 +71,12 @@ router.post("/:chatId", requireAuth, async (req, res) => {
         // 1. Download buffer
         const buffer = await downloadFileBuffer(
           user.google_refresh_token,
-          fileRecord.drive_id,
+          fileRecord.drive_file_id,
         );
         // 2. Extract Text
         const text = await extractTextFromBuffer(buffer);
 
-        combinedFileText += `\n--- Contents of ${fileRecord.name} ---\n${text}`;
+        combinedFileText += `\n--- Contents of ${fileRecord.original_name} ---\n${text}`;
       }
       // 3. Inject it into the AI's history as a System message at the very top!
       formattedHistory.unshift({

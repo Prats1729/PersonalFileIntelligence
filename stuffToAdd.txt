@@ -1,0 +1,1 @@
+1) the categorize currently works, too slow because each uploaded file is sent to the LLM

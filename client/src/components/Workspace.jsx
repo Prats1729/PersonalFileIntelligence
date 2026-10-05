@@ -1,5 +1,6 @@
 import React, { useState, useEffect} from "react";
 import { Toaster, toast } from "react-hot-toast";
+import Chat from "./Chat"; // NEW: Import our Chat component!
 import {
   HardDrive,
   Search,
@@ -14,7 +15,9 @@ import {
   Plus,
   CheckCircle2,
   FileCode,
-  Trash
+  Trash,
+  ArrowLeft,
+  MessageSquare
 } from "lucide-react";
 
 export default function Workspace({ user, onLogout, isLoggingOut }) {
@@ -29,10 +32,14 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
   const [isDragOver, setIsDragOver] = useState(false);
   const [selectedIds, setSelectedIds] = useState([]);
   const selectedFile =
-    selectedIds.length === 1
+    selectedIds.length > 0
       ? files.find((f) => f.id === selectedIds[0])
       : null;
+  const selectedFiles = files.filter((f) => selectedIds.includes(f.id));
+
   const [activeScope, setActiveScope] = useState("All files");
+  const [currentFolder, setCurrentFolder] = useState(null);
+  const [sidebarMode, setSidebarMode] = useState("details"); // NEW: Toggle between 'details' and 'chat'
 
   // This runs every time the component renders (like when the user types a letter)
   const filteredFiles = files.filter((file) => {
@@ -46,14 +53,26 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
     let matchesScope = true;
     if (activeScope === "Documents") {
       // Check if file.mime_type includes 'pdf' or 'document' (like word docs)
-      matchesScope = file.mime_type?.includes('pdf') || file.mime_type?.includes('document') || file.mime_type?.includes('text');
+      matchesScope =
+        file.mime_type?.includes("pdf") ||
+        file.mime_type?.includes("document") ||
+        file.mime_type?.includes("text");
     } else if (activeScope === "Images") {
       // Check if file.mime_type includes 'image'
-      matchesScope = file.mime_type?.includes('image');
+      matchesScope = file.mime_type?.includes("image");
     }
 
     return matchesSearch && matchesScope;
   });
+
+  // Calculate Folders and Files to display based on current selection
+  const uniqueFolders = Array.from(
+    new Set(filteredFiles.map((f) => f.ai_result_folder).filter(Boolean)),
+  );
+
+  const displayedFiles = currentFolder
+    ? filteredFiles.filter((f) => f.ai_result_folder === currentFolder)
+    : filteredFiles.filter((f) => !f.ai_result_folder);
 
   const fetchFiles = async () => {
     try {
@@ -373,17 +392,28 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
             </div>
           </div>
         </aside>
-
         {/* Center Catalog Workspace (Fluid Width) */}
         <section className="flex-1 flex flex-col bg-[#0d0e11] overflow-y-auto">
           {/* Action Bar */}
           <div className="h-12 px-6 border-b border-[#232732] flex items-center justify-between bg-[#12141a]/40">
             <div>
-              <h2 className="text-sm font-semibold text-white">
-                All Documents
-              </h2>
+              <div className="flex items-center gap-2">
+                {currentFolder && (
+                  <button
+                    onClick={() => setCurrentFolder(null)}
+                    className="p-1 hover:bg-[#232732] rounded text-[#64748b] hover:text-white transition-colors"
+                  >
+                    <ArrowLeft className="w-4 h-4" />
+                  </button>
+                )}
+                <h2 className="text-sm font-semibold text-white">
+                  {currentFolder ? currentFolder : "All Documents"}
+                </h2>
+              </div>
               <p className="text-[11px] text-[#64748b]">
-                Indexed with metadata and attached notes
+                {currentFolder
+                  ? "Files in this category"
+                  : "Indexed with metadata and attached notes"}
               </p>
             </div>
 
@@ -490,7 +520,8 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
                         className="w-full h-24 p-3 text-sm bg-[#181b22] border border-[#2e3442] rounded-lg text-white placeholder-[#64748b] focus:outline-none focus:border-[#38bdf8] focus:ring-1 focus:ring-[#38bdf8] transition-all resize-none shadow-inner"
                       ></textarea>
                       <p className="text-[10px] text-[#64748b] italic mt-1 text-center">
-                        * Note: If the database is asleep, the first upload attempt might fail. Just try again!
+                        * Note: If the database is asleep, the first upload
+                        attempt might fail. Just try again!
                       </p>
                     </div>
                   </div>
@@ -554,7 +585,9 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
                   ) : (
                     <Trash className="w-3.5 h-3.5" />
                   )}
-                  <span>{isDeletingBulk ? "Deleting..." : "Delete Selected"}</span>
+                  <span>
+                    {isDeletingBulk ? "Deleting..." : "Delete Selected"}
+                  </span>
                 </button>
               </div>
             </div>
@@ -580,7 +613,37 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
               </div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {filteredFiles.map((file) => (
+                {/* 1. Render Folders (only if we are at the root) */}
+                {!currentFolder &&
+                  uniqueFolders.map((folderName) => (
+                    <div
+                      key={folderName}
+                      onDoubleClick={() => setCurrentFolder(folderName)}
+                      className="flex flex-col h-24 p-4 rounded-lg bg-[#181b22]/50 border border-[#232732] hover:border-[#38bdf8]/50 hover:bg-[#38bdf8]/5 transition-all cursor-pointer group"
+                    >
+                      <div className="flex items-center gap-3 h-full">
+                        <div className="w-10 h-10 rounded-lg bg-[#38bdf8]/10 flex items-center justify-center text-[#38bdf8] group-hover:scale-110 transition-transform">
+                          <Folder className="w-5 h-5 fill-[#38bdf8]/20" />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <h4 className="text-sm font-semibold text-white truncate group-hover:text-[#38bdf8] transition-colors">
+                            {folderName}
+                          </h4>
+                          <p className="text-[11px] text-[#64748b] mt-0.5 font-mono">
+                            {
+                              filteredFiles.filter(
+                                (f) => f.ai_result_folder === folderName,
+                              ).length
+                            }{" "}
+                            items
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+
+                {/* 2. Render Files */}
+                {displayedFiles.map((file) => (
                   <div
                     key={file.id}
                     onClick={(e) => handleCardClick(e, file)}
@@ -630,90 +693,135 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
               </div>
             )}
           </div>
-        </section>
+        </section>{" "}
+        {/* Right Contextual Inspector & Chat (Dual Mode) */}
+        <aside
+          className={`border-l border-[#232732] bg-[#12141a] flex flex-col flex-shrink-0 transition-all duration-300 ${sidebarMode === "chat" ? "w-[450px]" : "w-80"}`}
+        >
+          {/* Dual Mode Toggle */}
+          <div className="flex items-center p-2 border-b border-[#232732] gap-1">
+            <button
+              onClick={() => setSidebarMode("details")}
+              className={`flex-1 flex items-center justify-center gap-2 py-1.5 text-xs font-semibold rounded transition-colors ${sidebarMode === "details" ? "bg-[#232732] text-white" : "text-[#64748b] hover:text-[#94a3b8] hover:bg-[#181b22]"}`}
+            >
+              <FileCode className="w-3.5 h-3.5" />
+              Details
+            </button>
+            <button
+              onClick={() => setSidebarMode("chat")}
+              className={`flex-1 flex items-center justify-center gap-2 py-1.5 text-xs font-semibold rounded transition-colors ${sidebarMode === "chat" ? "bg-[#38bdf8]/10 text-[#38bdf8]" : "text-[#64748b] hover:text-[#94a3b8] hover:bg-[#181b22]"}`}
+            >
+              <MessageSquare className="w-3.5 h-3.5" />
+              Intelligence Chat
+            </button>
+          </div>
 
-        {/* Right Contextual Inspector (340px fixed) */}
-        <aside className="w-80 border-l border-[#232732] bg-[#12141a] flex flex-col justify-between flex-shrink-0 p-4">
-          {selectedFile ? (
-            <div className="space-y-4">
-              <div>
-                <p className="text-[10px] font-mono uppercase tracking-wider text-[#64748b]">
-                  Document Inspector
-                </p>
-                <h3 className="text-sm font-semibold text-white mt-1 break-words">
-                  {selectedFile.original_name}
-                </h3>
-              </div>
-
-              {/* Attached Context Note Section */}
-              {selectedFile.context_note ? (
-                <div className="p-3 rounded-lg bg-[#181b22] border border-[#2e3442]">
-                  <p className="text-[10px] font-mono uppercase text-[#38bdf8] font-semibold mb-1">
-                    Attached Context Note
-                  </p>
-                  <p className="text-xs text-[#e3e2e6] italic">
-                    {selectedFile.context_note}
-                  </p>
-                </div>
-              ) : (
-                <div className="p-3 rounded-lg border border-dashed border-[#232732]">
-                  <p className="text-xs text-[#64748b] italic text-center">
-                    No context note provided
-                  </p>
-                </div>
-              )}
-
-              {/* Technical Metadata */}
-              <div className="space-y-2 text-xs">
-                <div className="flex justify-between py-1 border-b border-[#232732]">
-                  <span className="text-[#64748b]">File Size</span>
-                  <span className="text-white font-mono text-[11px]">
-                    {formatBytes(selectedFile.size_bytes)}
-                  </span>
-                </div>
-                <div className="flex justify-between py-1 border-b border-[#232732]">
-                  <span className="text-[#64748b]">Uploaded</span>
-                  <span className="text-white font-mono text-[11px]">
-                    {new Date(selectedFile.created_at).toLocaleDateString()}
-                  </span>
-                </div>
-              </div>
-
-              {/* Action Buttons */}
-              <div className="pt-4 flex flex-col gap-2">
-                <a
-                  href={`https://drive.google.com/file/d/${selectedFile.drive_file_id}/view`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="w-full h-8 flex items-center justify-center gap-2 rounded bg-[#38bdf8]/10 hover:bg-[#38bdf8]/20 border border-[#38bdf8]/30 text-[#38bdf8] text-xs font-semibold transition-colors"
-                >
-                  <ExternalLink className="w-3.5 h-3.5" />
-                  <span>Open in Drive</span>
-                </a>
-
-                <button
-                  onClick={() => handleFileDelete(selectedFile.id)}
-                  disabled={isDeleting}
-                  className="w-full h-8 flex items-center justify-center gap-2 rounded bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-red-400 hover:text-red-300 text-xs font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {isDeleting ? (
-                    <div className="w-3.5 h-3.5 border-2 border-red-400 border-t-transparent rounded-full animate-spin"></div>
-                  ) : (
-                    <Trash className="w-3.5 h-3.5" />
-                  )}
-                  <span>{isDeleting ? "Deleting..." : "Delete File"}</span>
-                </button>
-              </div>
+          {/* Content Area */}
+          <div className="flex-1 overflow-y-auto relative">
+            {/* CHAT MODE */}
+            <div className={`absolute inset-0 ${sidebarMode === "chat" ? "block" : "hidden"}`}>
+              <Chat
+                user={user}
+                selectedFiles={selectedFiles}
+                onRemoveContext={(fileIdToRemove) => {
+                  setSelectedIds(
+                    selectedIds.filter((id) => id !== fileIdToRemove),
+                  );
+                }}
+                onClearAllContext={() => setSelectedIds([])}
+              />
             </div>
-          ) : (
-            <div className="h-full flex flex-col items-center justify-center text-center text-[#64748b]">
-              <FileCode className="w-8 h-8 mb-2 opacity-50" />
-              <p className="text-xs">
-                Select a document to inspect attached context and Drive
-                metadata.
-              </p>
-            </div>
-          )}
+
+            {/* DETAILS MODE */}
+            <div className={`absolute inset-0 ${sidebarMode === "details" ? "block" : "hidden"}`}>
+              <div className="p-4 flex flex-col h-full overflow-y-auto">
+                {selectedFile ? (
+                  <div className="space-y-4">
+                    <div>
+                      <p className="text-[10px] font-mono uppercase tracking-wider text-[#64748b]">
+                        Document Inspector
+                      </p>
+                      <h3 className="text-sm font-semibold text-white mt-1 break-words">
+                        {selectedFile.original_name}
+                      </h3>
+                    </div>
+
+                    {/* Attached Context Note Section */}
+                    {selectedFile.context_note ? (
+                      <div className="p-3 rounded-lg bg-[#181b22] border border-[#2e3442]">
+                        <p className="text-[10px] font-mono uppercase text-[#38bdf8] font-semibold mb-1">
+                          Attached Context Note
+                        </p>
+                        <p className="text-xs text-[#e3e2e6] italic">
+                          {selectedFile.context_note}
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="p-3 rounded-lg border border-dashed border-[#232732]">
+                        <p className="text-xs text-[#64748b] italic text-center">
+                          No context note provided
+                        </p>
+                      </div>
+                    )}
+
+                    {/* Technical Metadata */}
+                    <div className="space-y-2 text-xs">
+                      <div className="flex justify-between py-1 border-b border-[#232732]">
+                        <span className="text-[#64748b]">File Size</span>
+                        <span className="text-white font-mono text-[11px]">
+                          {formatBytes(selectedFile.size_bytes)}
+                        </span>
+                      </div>
+                      <div className="flex justify-between py-1 border-b border-[#232732]">
+                        <span className="text-[#64748b]">Uploaded</span>
+                        <span className="text-white font-mono text-[11px]">
+                          {new Date(
+                            selectedFile.created_at,
+                          ).toLocaleDateString()}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Action Buttons */}
+                    <div className="pt-4 flex flex-col gap-2">
+                      <a
+                        href={`https://drive.google.com/file/d/${selectedFile.drive_file_id}/view`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="w-full h-8 flex items-center justify-center gap-2 rounded bg-[#38bdf8]/10 hover:bg-[#38bdf8]/20 border border-[#38bdf8]/30 text-[#38bdf8] text-xs font-semibold transition-colors"
+                      >
+                        <ExternalLink className="w-3.5 h-3.5" />
+                        <span>Open in Drive</span>
+                      </a>
+
+                      <button
+                        onClick={() => handleFileDelete(selectedFile.id)}
+                        disabled={isDeleting}
+                        className="w-full h-8 flex items-center justify-center gap-2 rounded bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-red-400 hover:text-red-300 text-xs font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {isDeleting ? (
+                          <div className="w-3.5 h-3.5 border-2 border-red-400 border-t-transparent rounded-full animate-spin"></div>
+                        ) : (
+                          <Trash className="w-3.5 h-3.5" />
+                        )}
+                        <span>
+                          {isDeleting ? "Deleting..." : "Delete File"}
+                        </span>
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="h-full flex flex-col items-center justify-center text-center text-[#64748b]">
+                    <FileCode className="w-8 h-8 mb-2 opacity-50" />
+                    <p className="text-xs">
+                      Select a document to inspect attached context and Drive
+                      metadata.
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
         </aside>
       </div>
     </div>
