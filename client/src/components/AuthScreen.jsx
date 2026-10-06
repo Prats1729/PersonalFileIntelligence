@@ -1,9 +1,10 @@
 import React from "react";
 import { Shield, HardDrive, Database, Sparkles, Terminal, ArrowRight, CheckCircle2 } from "lucide-react";
+import { API_BASE } from "../config";
 
 export default function AuthScreen() {
   const handleGoogleLogin = () => {
-    window.location.href = "http://localhost:5000/api/auth/google";
+    window.location.href = `${API_BASE}/api/auth/google`;
   };
 
   return (
@@ -131,7 +132,7 @@ export default function AuthScreen() {
           <span>Design: Kinetic Monolith</span>
         </div>
         <div>
-          <span>Press ⌘K for Command Palette</span>
+          <span>Press ⌘K to Focus Search</span>
         </div>
       </footer>
     </div>

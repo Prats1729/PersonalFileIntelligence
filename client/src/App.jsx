@@ -2,6 +2,7 @@ import React, { useState, useEffect } from "react";
 import { MessageSquare, Folder, LogOut } from "lucide-react";
 import AuthScreen from "./components/AuthScreen";
 import Workspace from "./components/Workspace";
+import { API_BASE } from "./config";
 
 export default function App() {
   const [user, setUser] = useState(null);
@@ -9,7 +10,7 @@ export default function App() {
 
   // Check if a session exists on initial load and keep DB awake
   useEffect(() => {
-    fetch("http://localhost:5000/api/auth/me", {
+    fetch(`${API_BASE}/api/auth/me`, {
       credentials: "include", // Sends our HTTP-only session cookie
     })
       .then((res) => {
@@ -28,7 +29,7 @@ export default function App() {
 
     // Keep Neon DB awake by pinging the health endpoint every 4 minutes
     const keepAliveInterval = setInterval(() => {
-      fetch("http://localhost:5000/api/health").catch(console.error);
+      fetch(`${API_BASE}/api/health`).catch(console.error);
     }, 4 * 60 * 1000); // 4 minutes
 
     return () => clearInterval(keepAliveInterval);
@@ -39,7 +40,7 @@ export default function App() {
   const handleLogout = async () => {
     setIsLoggingOut(true);
     try {
-      await fetch("http://localhost:5000/api/auth/logout", {
+      await fetch(`${API_BASE}/api/auth/logout`, {
         method: "POST",
         credentials: "include",
       });
