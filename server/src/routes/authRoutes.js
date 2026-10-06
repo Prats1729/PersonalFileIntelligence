@@ -5,9 +5,11 @@ import {
   generateAppToken,
 } from "../services/authService.js";
 import { requireAuth } from "../middleware/authMiddleware.js";
+import { authLimiter } from "../middleware/rateLimiter.js";
 import { query } from "../db/index.js";
 
 const router = Router();
+router.use(authLimiter);
 
 /**
  * 1. Start Google Login Flow
@@ -17,6 +19,27 @@ router.get("/google", (req, res) => {
   const url = getGoogleAuthUrl();
   res.redirect(url);
 });
+
+// Dev helper to auto-authenticate local browser sessions without re-running OAuth consent
+if (process.env.NODE_ENV !== "production") {
+  router.get("/dev-session", async (req, res) => {
+    try {
+      const userRes = await query("SELECT id FROM users LIMIT 1");
+      if (userRes.rows.length === 0) return res.status(404).json({ error: "No user found" });
+      const token = generateAppToken(userRes.rows[0].id);
+      res.cookie("session_token", token, {
+        httpOnly: true,
+        secure: false,
+        sameSite: "lax",
+        maxAge: 7 * 24 * 60 * 60 * 1000,
+      });
+      const clientUrl = process.env.CLIENT_URL || "http://localhost:5173";
+      return res.redirect(clientUrl);
+    } catch (err) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+}
 
 /**
  * 2. Google OAuth Callback
