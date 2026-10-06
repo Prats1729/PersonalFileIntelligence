@@ -74,20 +74,6 @@ export async function createDriveFolder(refreshToken, folderName) {
   });
   return response.data;
 }
-// Moves a file into a specific folder
-export async function moveFileToFolder(refreshToken, fileId, folderId) {
-  const drive = getDriveClient(refreshToken);
-  
-  // To move a file, we have to fetch its current parents, then add the new parent and remove the old ones
-  const file = await drive.files.get({ fileId: fileId, fields: "parents" });
-  const previousParents = file.data.parents ? file.data.parents.join(",") : "";
-  await drive.files.update({
-    fileId: fileId,
-    addParents: folderId,
-    removeParents: previousParents,
-    fields: "id, parents",
-  });
-}
 
 export async function downloadFileBuffer(refreshToken, fileId) {
   const drive = getDriveClient(refreshToken);

@@ -29,52 +29,6 @@ async function withRetry(operation, maxRetries = 3) {
   }
 }
 
-export async function categorizeFile(
-  fileName,
-  mimeType,
-  contextNote,
-  existingFolders
-) {
-  const folderNames = existingFolders.map((f) => f.name).join(", ");
-
-  const systemPrompt = `
-    You are an AI file organizer.
-    You look at the filetype, mimetype and user note and the filename
-    and decide which folder it belongs to. i have given you exact list of folders that exixt in my app, you need to either tell me which folder fits it best or tell me a new folder name if none of them fit it. If you think it doesnt belong to any folder, then return null for both chosenExistingFolder and suggestedNewFolder. Don't give a folder name that is similar to any existing folder.
-    
-    Existing Folders: ${folderNames}
-  `;
-
-  const userPrompt = `
-    File Name: ${fileName}
-    Mime Type: ${mimeType}
-    Context Note: ${contextNote || "None"}
-    
-    IMPORTANT: You must return ONLY a raw JSON object and nothing else. No markdown formatting, no backticks.
-    Example: {"chosenExistingFolder": "Math", "suggestedNewFolder": null}
-  `;
-
-  return withRetry(async () => {
-    const response = await openai.chat.completions.create({
-      model: "openrouter/auto", // OpenRouter's automatic free router
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userPrompt }
-      ],
-      response_format: { type: "json_object" }, // Forces JSON output
-    });
-
-    const content = response.choices[0].message.content;
-    
-    try {
-      return JSON.parse(content);
-    } catch (e) {
-      console.error("Failed to parse AI JSON:", content);
-      return { chosenExistingFolder: null, suggestedNewFolder: "AI Needs Review" };
-    }
-  });
-}
-
 export async function categorizeFilesBulk(
   files,
   contextNote,

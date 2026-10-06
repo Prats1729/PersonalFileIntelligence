@@ -44,13 +44,25 @@ export async function getFileRecord(userId, fileId){
   return res.rows[0];
 }
 
-export async function updateFileFolder(fileId, folderName) {
+export async function getFilesByFolder(userId, folderName) {
+  const selectSql = "SELECT * FROM files WHERE user_id = $1 AND LOWER(ai_result_folder) = LOWER($2)";
+  const res = await query(selectSql, [userId, folderName]);
+  return res.rows;
+}
+
+export async function deleteFilesByFolder(userId, folderName) {
+  const deleteSql = "DELETE FROM files WHERE user_id = $1 AND LOWER(ai_result_folder) = LOWER($2) RETURNING *;";
+  const res = await query(deleteSql, [userId, folderName]);
+  return res.rows;
+}
+
+export async function updateFileContextNote(userId, fileId, contextNote) {
   const updateSql = `
     UPDATE files 
-    SET ai_result_folder = $1 
-    WHERE id = $2 
+    SET context_note = $1, updated_at = CURRENT_TIMESTAMP 
+    WHERE id = $2 AND user_id = $3 
     RETURNING *;
   `;
-  const result = await query(updateSql, [folderName, fileId]);
+  const result = await query(updateSql, [contextNote, fileId, userId]);
   return result.rows[0];
 }
