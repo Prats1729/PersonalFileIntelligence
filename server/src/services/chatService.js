@@ -32,6 +32,22 @@ export async function updateChatTitle(chatId, title){
     return result.rows[0];
 }
 
+export async function getChatById(chatId, userId) {
+    const result = await query(
+        "SELECT id, user_id, title, created_at, updated_at FROM chats WHERE id = $1 AND user_id = $2",
+        [chatId, userId]
+    );
+    return result.rows[0];
+}
+
+export async function deleteLastAiMessage(chatId) {
+    const result = await query(
+        "DELETE FROM messages WHERE id = (SELECT id FROM messages WHERE chat_id = $1 AND role = 'ai' ORDER BY created_at DESC LIMIT 1) RETURNING *",
+        [chatId]
+    );
+    return result.rows[0];
+}
+
 export async function deleteChat(chatId, userId){
     const result = await query(
         "DELETE FROM chats WHERE id = $1 AND user_id = $2 RETURNING *", 

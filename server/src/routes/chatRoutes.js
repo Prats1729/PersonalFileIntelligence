@@ -1,8 +1,11 @@
 import { Router } from "express";
 import { requireAuth } from "../middleware/authMiddleware.js";
+import { chatLimiter } from "../middleware/rateLimiter.js";
 import {
   getUserChats,
   getChatMessages,
+  getChatById,
+  deleteLastAiMessage,
   saveMessage,
   createChat,
   updateChatTitle,
@@ -15,11 +18,12 @@ import { extractTextFromBuffer } from "../services/extractionService.js";
 
 const router = Router();
 
+router.use(chatLimiter);
+
 router.get("/", requireAuth, async (req, res) => {
   const userId = req.user.id;
   const result = await getUserChats(userId);
-  if (!result) return res.status(404).json({ error: "No chats found" });
-  return res.status(200).json(result);
+  return res.status(200).json(result || []);
 });
 
 router.post("/", requireAuth, async (req, res) => {
@@ -35,15 +39,21 @@ router.post("/", requireAuth, async (req, res) => {
 
 router.get("/:chatId", requireAuth, async (req, res) => {
   const chatId = req.params.chatId;
-  const chat = await getChatMessages(chatId);
+  const userId = req.user.id;
+  const chat = await getChatById(chatId, userId);
   if (!chat) return res.status(404).json({ error: "Chat not found" });
-  return res.status(200).json(chat);
+
+  const messages = await getChatMessages(chatId);
+  return res.status(200).json(messages);
 });
 
 router.delete("/:chatId", requireAuth, async (req, res) => {
   try {
     const chatId = req.params.chatId;
     const userId = req.user.id;
+    const chat = await getChatById(chatId, userId);
+    if (!chat) return res.status(404).json({ error: "Chat not found" });
+
     await deleteChat(chatId, userId);
     return res.status(200).json({ success: true });
   } catch (error) {
@@ -55,17 +65,24 @@ router.delete("/:chatId", requireAuth, async (req, res) => {
 router.post("/:chatId", requireAuth, async (req, res) => {
   const userId = req.user.id;
   const chatId = req.params.chatId;
-  const { message } = req.body;
+  const { message, isRegenerate = false } = req.body;
 
   try {
-    // STEP 1: Save the user's message
-    await saveMessage(chatId, "user", message);
+    const chat = await getChatById(chatId, userId);
+    if (!chat) return res.status(404).json({ error: "Chat not found" });
+
+    // STEP 1: Save the user's message or clean last AI response on regenerate
+    if (isRegenerate) {
+      await deleteLastAiMessage(chatId);
+    } else if (message) {
+      await saveMessage(chatId, "user", message);
+    }
 
     // STEP 2: Fetch the entire chat history
     const history = await getChatMessages(chatId);
 
     // --- STEP 2.5: BACKGROUND TITLE GENERATION ---
-    if (history.length === 1) {
+    if (!isRegenerate && history.length === 1 && message) {
       // Fire-and-forget! We don't await this so it doesn't slow down the response
       generateChatTitle(message).then(async (title) => {
         console.log(`Auto-generated title: ${title}`);
@@ -79,34 +96,80 @@ router.post("/:chatId", requireAuth, async (req, res) => {
       content: msg.content,
     }));
 
-    const { mentionedFileIds } = req.body;
-    // --- STEP 3.5: THE MIDDLEMAN INJECTION ---
+    const { mentionedFileIds, groundingMode = "strict", scope = "document" } = req.body;
+    let combinedFileText = "";
+    const attachedContextNotes = [];
+
+    // --- STEP 3.5: THE MIDDLEMAN INJECTION WITH CONTEXT NOTES ---
     if (mentionedFileIds && mentionedFileIds.length > 0) {
       console.log(
-        `User mentioned ${mentionedFileIds.length} files. Downloading...`,
+        `User mentioned ${mentionedFileIds.length} files. Downloading and reading...`,
       );
-      const user = await getUserById(userId);
-      let combinedFileText = "";
-      for (const fileId of mentionedFileIds) {
-        // Fetch from DB to get the Google Drive ID
-        const fileRecord = await getFileRecord(userId, fileId);
-        if (!fileRecord) continue;
-        // 1. Download buffer
-        const buffer = await downloadFileBuffer(
-          user.google_refresh_token,
-          fileRecord.drive_file_id,
-        );
-        // 2. Extract Text
-        const text = await extractTextFromBuffer(buffer);
+      try {
+        const user = await getUserById(userId);
+        for (const fileId of mentionedFileIds.slice(0, 5)) {
+          try {
+            const fileRecord = await getFileRecord(userId, fileId);
+            if (!fileRecord) continue;
 
-        combinedFileText += `\n--- Contents of ${fileRecord.original_name} ---\n${text}`;
+            let noteInfo = "";
+            if (fileRecord.context_note) {
+              noteInfo = `\n[Pinned Student/Professor Context Note for "${fileRecord.original_name}"]: "${fileRecord.context_note}"\n`;
+              attachedContextNotes.push({
+                fileId: fileRecord.id,
+                fileName: fileRecord.original_name,
+                note: fileRecord.context_note,
+              });
+            }
+
+            const buffer = await downloadFileBuffer(
+              user.google_refresh_token,
+              fileRecord.drive_file_id,
+            );
+            const text = await extractTextFromBuffer(buffer, fileRecord.mime_type);
+
+            // Limit text per file to 25k characters to prevent token overflow
+            const truncatedText = text ? text.slice(0, 25000) : "No text content extracted.";
+            combinedFileText += `\n--- Document: "${fileRecord.original_name}" ---\n${noteInfo}${truncatedText}\n`;
+          } catch (fileErr) {
+            console.warn(`Error processing file ${fileId} for chat:`, fileErr.message);
+          }
+        }
+      } catch (authErr) {
+        console.warn("Error fetching user for Drive download:", authErr.message);
       }
-      // 3. Inject it into the AI's history as a System message at the very top!
-      formattedHistory.unshift({
-        role: "system",
-        content: `You have been provided the following files. Use them to answer the user's questions:\n${combinedFileText}`,
-      });
     }
+
+    const systemPrompt = `You are the Intelligence Assistant for Personal Library — an advanced academic knowledge and document intelligence engine.
+Your purpose is to help students understand, analyze, and master their course materials, textbook slides, and exam context notes.
+
+${
+  groundingMode === "strict"
+    ? `GROUNDING MODE: STRICT CITATIONS
+- Answer using ONLY facts, equations, and definitions grounded in the provided documents and context notes.
+- Do NOT speculate or extrapolate outside the provided texts.
+- Include explicit citations in brackets for key statements, e.g. [Slide 18: rwnd] or [RFC 793 / Section 4] or [Source: Document Name].
+- If an answer is not present in the documents, state so clearly.`
+    : `GROUNDING MODE: REASONING & SYNTHESIS
+- Use the provided documents and context notes as foundational ground truth.
+- Provide comprehensive explanations, step-by-step reasoning, architectural breakdowns, formulas, and connections between concepts.`
+}
+
+SPECIAL INSTRUCTIONS:
+1. INTERNAL REASONING: Always prefix your response with an internal reasoning summary enclosed in <thinking>...</thinking> tags. Describe what you retrieved, analyzed, and synthesized, including a simulated timer (e.g., <thinking>Reasoned through congestion control mechanisms, rwnd buffer allocation, and professor notes (1.2s)</thinking>).
+2. CONTEXT NOTES HIGHLIGHT: If the document has a pinned context note (especially professor exam tips, warnings, or study notes) that relates to the user's question, call it out using:
+> 📌 **Pinned Context Match:** "exact text or quote of note"
+3. FORMULAS & CODE: Format mathematical equations or protocol formulas in clean monospace code blocks with a title comment.
+4. Keep the output beautifully structured, sharp, concise, and pedagogical.`;
+
+    formattedHistory.unshift({
+      role: "system",
+      content: `${systemPrompt}${
+        combinedFileText
+          ? `\n\nATTACHED DOCUMENTS AND CONTEXT NOTES:\n${combinedFileText}`
+          : "\n\n(No documents attached for this conversation. Rely on general file intelligence principles.)"
+      }`,
+    });
 
     // STEP 4: Send the history to the LLM
     const aiResponseText = await chatWithAI(formattedHistory);
@@ -115,7 +178,10 @@ router.post("/:chatId", requireAuth, async (req, res) => {
     const savedAiMessage = await saveMessage(chatId, "ai", aiResponseText);
 
     // STEP 6: Return the AI's message to the frontend
-    return res.status(200).json(savedAiMessage);
+    return res.status(200).json({
+      ...savedAiMessage,
+      attachedContextNotes,
+    });
   } catch (error) {
     console.error("Chat Error:", error);
     return res.status(500).json({ error: "AI failed to respond" });
