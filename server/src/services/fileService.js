@@ -7,11 +7,11 @@ export async function getUserById(userId) {
 }
 
 // Save the uploaded file metadata to the database
-export async function saveFileRecord(userId, driveMetadata, file, contextNote) {
+export async function saveFileRecord(userId, driveMetadata, file, contextNote, folderName = null) {
   const insertSql = `
-    INSERT INTO files (user_id, drive_file_id, original_name, mime_type, size_bytes, context_note)
-    VALUES ($1, $2, $3, $4, $5, $6)
-    RETURNING id, drive_file_id, original_name, mime_type, size_bytes, context_note, created_at;
+    INSERT INTO files (user_id, drive_file_id, original_name, mime_type, size_bytes, context_note, ai_result_folder)
+    VALUES ($1, $2, $3, $4, $5, $6, $7)
+    RETURNING id, drive_file_id, original_name, mime_type, size_bytes, context_note, ai_result_folder, created_at;
   `;
   const result = await query(insertSql, [
     userId,
@@ -19,7 +19,8 @@ export async function saveFileRecord(userId, driveMetadata, file, contextNote) {
     file.originalname,
     file.mimetype,
     file.size,
-    contextNote || null
+    contextNote || null,
+    folderName
   ]);
   return result.rows[0];
 }

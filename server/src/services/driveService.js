@@ -18,23 +18,29 @@ export function getDriveClient(refreshToken){
 // @param {Object} filr - the file object from multer (contains buffer, originalname, mimetype)
 // @returns {promise<Object>} google drive fie metadata (id , name, webViewLink, etc)
 
-export async function uploadFileToDrive(refreshToken, file){
+export async function uploadFileToDrive(refreshToken, file, folderId = null){
     const drive = getDriveClient(refreshToken);
 
     // convert the buffer into readable stream for google's api
     const fileStream = Readable.from(file.buffer);
 
+    const requestBody = {
+        name: file.originalname,
+        mimeType: file.mimetype,
+    };
+
+    if (folderId) {
+        requestBody.parents = [folderId];
+    }
+
     const response = await drive.files.create({
-        requestBody: {
-            name: file.originalname,
-            mimeType: file.mimetype,
-        },
+        requestBody,
         media: {
             mimeType: file.mimetype,
             body: fileStream
         },
         fields: "id, name, mimeType, size, webViewLink",
-    })
+    });
     return response.data;
 }
 

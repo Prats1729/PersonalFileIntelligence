@@ -75,6 +75,77 @@ export async function categorizeFile(
   });
 }
 
+export async function categorizeFilesBulk(
+  files,
+  contextNote,
+  existingFolders
+) {
+  const folderNames = existingFolders.map((f) => f.name).join(", ");
+
+  const filesListStr = files
+    .map(
+      (f) => `File Index ${f.index}: Name: "${f.name}", MimeType: "${f.mimeType}"`
+    )
+    .join("\n");
+
+  const systemPrompt = `
+    You are an AI file organizer.
+    You will receive a list of files (each with an index, name, and mime type) and an optional user note.
+    Your job is to decide which folder each file belongs to.
+    Existing folders: ${folderNames || "None"}
+
+    Rules:
+    - For each file, choose an existing folder if it fits best, or suggest a new folder name if none of the existing ones fit.
+    - If a file doesn't fit any folder, set both chosenExistingFolder and suggestedNewFolder to null.
+    - Do NOT suggest a folder name that is similar to an existing folder.
+    - If multiple files in this batch belong to the same new category, suggest the exact same suggestedNewFolder name for all of them.
+  `;
+
+  const userPrompt = `
+    Context Note: ${contextNote || "None"}
+
+    Files to categorize:
+${filesListStr}
+
+    IMPORTANT: You must return ONLY a raw JSON object with a "results" array. No markdown formatting, no backticks.
+    Each item in "results" must contain:
+    - "index": the numeric index of the file
+    - "fileName": the name of the file
+    - "chosenExistingFolder": string or null
+    - "suggestedNewFolder": string or null
+
+    Example:
+    {
+      "results": [
+        { "index": 0, "fileName": "lecture1.pdf", "chosenExistingFolder": "Math", "suggestedNewFolder": null },
+        { "index": 1, "fileName": "tax_2025.pdf", "chosenExistingFolder": null, "suggestedNewFolder": "Finance" }
+      ]
+    }
+  `;
+
+  return withRetry(async () => {
+    const response = await openai.chat.completions.create({
+      model: "openrouter/auto",
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt }
+      ],
+      response_format: { type: "json_object" },
+    });
+
+    const content = response.choices[0].message.content;
+
+    try {
+      const parsed = JSON.parse(content);
+      const items = parsed.results || parsed.files || parsed.categorizations || (Array.isArray(parsed) ? parsed : []);
+      return items;
+    } catch (e) {
+      console.error("Failed to parse bulk AI JSON:", content);
+      return [];
+    }
+  });
+}
+
 export async function chatWithAI(messages) {
   return withRetry(async () => {
     const response = await openai.chat.completions.create({

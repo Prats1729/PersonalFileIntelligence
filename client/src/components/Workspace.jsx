@@ -34,7 +34,7 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
   const selectedFile =
     selectedIds.length > 0
       ? files.find((f) => f.id === selectedIds[0])
-      : null;
+      : null; 
   const selectedFiles = files.filter((f) => selectedIds.includes(f.id));
 
   const [activeScope, setActiveScope] = useState("All files");
@@ -134,24 +134,51 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
     fetchChats();
   }, []);
 
-  // Close upload modal on Escape key
+  // Push state when entering a deep state so back button can be intercepted
   useEffect(() => {
+    const isDeep = isUploadModalOpen || currentFolder || sidebarMode === "chat";
+    if (isDeep) {
+      window.history.pushState({ deep: true }, "");
+    }
+  }, [isUploadModalOpen, currentFolder, sidebarMode]);
+
+  // Handle browser back button and Escape key
+  useEffect(() => {
+    const handlePopState = (e) => {
+      // If modal is open, close it
+      if (isUploadModalOpen) {
+        setIsUploadModalOpen(false);
+        setUploadFiles([]);
+        setUploadNote("");
+      } 
+      // If viewing a folder, go back to all files
+      else if (currentFolder) {
+        setCurrentFolder(null);
+      }
+      // If in chat mode, go back to details mode
+      else if (sidebarMode === "chat") {
+        setSidebarMode("details");
+      }
+    };
+
     const handleEscape = (e) => {
       if (e.key === "Escape") {
-        // If the modal is open, close it
         if (isUploadModalOpen) {
           setIsUploadModalOpen(false);
           setUploadFiles([]);
           setUploadNote("");
         }
-
-        // Always clear the multi-selection if Escape is pressed
         setSelectedIds([]);
       }
     };
+
+    window.addEventListener("popstate", handlePopState);
     window.addEventListener("keydown", handleEscape);
-    return () => window.removeEventListener("keydown", handleEscape);
-  }, [isUploadModalOpen, selectedIds]);
+    return () => {
+      window.removeEventListener("popstate", handlePopState);
+      window.removeEventListener("keydown", handleEscape);
+    };
+  }, [isUploadModalOpen, currentFolder, sidebarMode]);
 
   const formatBytes = (bytes) => {
     if (bytes === 0) return "0 B";
@@ -186,7 +213,15 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
       }
       const data = await res.json();
       console.log("Uploaded Successfully:", data);
-      setFiles((prev) => [...data.files, ...prev]);
+      if (data.files && data.files.length > 0) {
+        setFiles((prev) => [...data.files, ...prev]);
+      }
+
+      if (data.failedFiles && data.failedFiles.length > 0) {
+        toast.error(`${data.failedFiles.length} file(s) failed to upload.`);
+      } else {
+        toast.success("Files uploaded successfully!");
+      }
 
       // Reset state on success
       setIsUploading(false);
@@ -736,6 +771,7 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
                   <div
                     key={file.id}
                     onClick={(e) => handleCardClick(e, file)}
+                    onDoubleClick={() => window.open(`https://drive.google.com/file/d/${file.drive_file_id}/view`, "_blank")}
                     className={`flex flex-col h-full p-4 rounded-lg bg-[#12141a] border transition-all cursor-pointer ${
                       selectedIds.includes(file.id)
                         ? "border-[#38bdf8] shadow-md shadow-[#38bdf8]/10"
@@ -822,8 +858,12 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
                 onChatCreated={(newChatId) => {
                   setActiveChatId(newChatId);
                   fetchChats();
-                  // Re-fetch a few seconds later to catch the LLM-generated title!
+                  // Fallback: Re-fetch a few seconds later just in case
                   setTimeout(fetchChats, 4000);
+                }}
+                onChatUpdated={() => {
+                  // The LLM has responded, meaning the title should be generated in the DB by now!
+                  fetchChats();
                 }}
               />
             </div>

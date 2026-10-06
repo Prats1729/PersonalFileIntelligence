@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { Send, FileText, X } from "lucide-react";
 
-export default function Chat({ user, selectedFiles, onRemoveContext, onClearAllContext, activeChatId, onChatCreated }) {
+export default function Chat({ user, selectedFiles, onRemoveContext, onClearAllContext, activeChatId, onChatCreated, onChatUpdated }) {
   const [input, setInput] = useState("");
   const [chatId, setChatId] = useState(activeChatId || null); // Track the current DB chat session
   const [isLoading, setIsLoading] = useState(false);
@@ -12,6 +12,9 @@ export default function Chat({ user, selectedFiles, onRemoveContext, onClearAllC
   // Load history when a user clicks a past chat
   useEffect(() => {
     if (activeChatId) {
+      // Prevent race condition: if we just created this chat, we already have the state!
+      if (chatId === activeChatId) return;
+      
       setChatId(activeChatId);
       setIsLoading(true);
       fetch(`http://localhost:5000/api/chat/${activeChatId}`, {
@@ -50,6 +53,7 @@ export default function Chat({ user, selectedFiles, onRemoveContext, onClearAllC
     try {
       // 2. If we don't have a chat session yet, create one!
       let currentChatId = chatId;
+      let isNewChat = false;
       if (!currentChatId) {
         const createRes = await fetch("http://localhost:5000/api/chat", {
           method: "POST",
@@ -58,6 +62,7 @@ export default function Chat({ user, selectedFiles, onRemoveContext, onClearAllC
         const chatData = await createRes.json();
         currentChatId = chatData.id;
         setChatId(chatData.id);
+        isNewChat = true;
         
         // Let the Workspace know so it can refresh the sidebar!
         if(onChatCreated) onChatCreated(chatData.id);
@@ -83,6 +88,11 @@ export default function Chat({ user, selectedFiles, onRemoveContext, onClearAllC
       
       // 5. Clear the selected files so they don't get re-sent on the next message!
       if (onClearAllContext) onClearAllContext();
+
+      // If this was the first message, tell Workspace to fetch the new LLM title
+      if (isNewChat && onChatUpdated) {
+        onChatUpdated();
+      }
       
     } catch (error) {
       console.error("Chat error:", error);

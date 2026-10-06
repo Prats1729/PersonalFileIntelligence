@@ -1,1 +1,2 @@
-1) the categorize currently works, too slow because each uploaded file is sent to the LLM
+1) [DONE] bulk categorization: batch all uploaded files into a single LLM prompt instead of per-file requests
+2) the back buton might, still not be working might need to fix later
