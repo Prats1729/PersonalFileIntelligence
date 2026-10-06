@@ -7,7 +7,7 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  // Check if a session exists on initial load
+  // Check if a session exists on initial load and keep DB awake
   useEffect(() => {
     fetch("http://localhost:5000/api/auth/me", {
       credentials: "include", // Sends our HTTP-only session cookie
@@ -25,6 +25,13 @@ export default function App() {
       .finally(() => {
         setLoading(false);
       });
+
+    // Keep Neon DB awake by pinging the health endpoint every 4 minutes
+    const keepAliveInterval = setInterval(() => {
+      fetch("http://localhost:5000/api/health").catch(console.error);
+    }, 4 * 60 * 1000); // 4 minutes
+
+    return () => clearInterval(keepAliveInterval);
   }, []);
 
   const [isLoggingOut, setIsLoggingOut] = useState(false);

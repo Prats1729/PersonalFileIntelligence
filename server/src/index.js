@@ -24,11 +24,18 @@ app.use(
 app.use(express.json());
 app.use(cookieParser());
 
-// 3. Health Check Route
-app.get("/api/health", (req, res) => {
-  res.json({ status: "healthy", timestamp: new Date().toISOString() });
-});
+import { query } from "./db/index.js";
 
+// 3. Health Check Route
+app.get("/api/health", async (req, res) => {
+  try {
+    // This query forces the Neon database to wake up!
+    await query("SELECT 1");
+    res.json({ status: "healthy", db: "awake", timestamp: new Date().toISOString() });
+  } catch (error) {
+    res.status(500).json({ status: "error", message: "DB sleep timeout or error" });
+  }
+});
 import fileRoutes from "./routes/fileRoutes.js";
 import chatRoutes from "./routes/chatRoutes.js";
 

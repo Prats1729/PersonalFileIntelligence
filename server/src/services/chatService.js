@@ -31,3 +31,11 @@ export async function updateChatTitle(chatId, title){
     );
     return result.rows[0];
 }
+
+export async function deleteChat(chatId, userId){
+    const result = await query(
+        "DELETE FROM chats WHERE id = $1 AND user_id = $2 RETURNING *", 
+        [chatId, userId]
+    );
+    return result.rows[0];
+}

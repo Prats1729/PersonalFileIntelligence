@@ -1,13 +1,39 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { Send, FileText, X } from "lucide-react";
 
-export default function Chat({ user, selectedFiles, onRemoveContext, onClearAllContext }) {
+export default function Chat({ user, selectedFiles, onRemoveContext, onClearAllContext, activeChatId, onChatCreated }) {
   const [input, setInput] = useState("");
-  const [chatId, setChatId] = useState(null); // Track the current DB chat session
+  const [chatId, setChatId] = useState(activeChatId || null); // Track the current DB chat session
   const [isLoading, setIsLoading] = useState(false);
   const [messages, setMessages] = useState([
     { role: "assistant", content: "Hi! I'm your Personal Intelligence. Select a file or just start asking me questions!" }
   ]);
+
+  // Load history when a user clicks a past chat
+  useEffect(() => {
+    if (activeChatId) {
+      setChatId(activeChatId);
+      setIsLoading(true);
+      fetch(`http://localhost:5000/api/chat/${activeChatId}`, {
+        credentials: "include"
+      })
+      .then(res => res.json())
+      .then(data => {
+        if(data && data.length > 0) {
+           // Replace 'ai' with 'assistant' just for our UI
+           const formatted = data.map(m => ({ ...m, role: m.role === 'ai' ? 'assistant' : m.role }));
+           setMessages(formatted);
+        }
+      })
+      .catch(console.error)
+      .finally(() => setIsLoading(false));
+    } else {
+      setChatId(null);
+      setMessages([
+        { role: "assistant", content: "Hi! I'm your Personal Intelligence. Select a file or just start asking me questions!" }
+      ]);
+    }
+  }, [activeChatId]);
 
   const handleSend = async (e) => {
     e.preventDefault();
@@ -32,6 +58,9 @@ export default function Chat({ user, selectedFiles, onRemoveContext, onClearAllC
         const chatData = await createRes.json();
         currentChatId = chatData.id;
         setChatId(chatData.id);
+        
+        // Let the Workspace know so it can refresh the sidebar!
+        if(onChatCreated) onChatCreated(chatData.id);
       }
 
       // 3. Send the message and the selected files to your RAG backend

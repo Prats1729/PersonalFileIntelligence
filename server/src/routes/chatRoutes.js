@@ -5,7 +5,8 @@ import {
   getChatMessages,
   saveMessage,
   createChat,
-  updateChatTitle
+  updateChatTitle,
+  deleteChat
 } from "../services/chatService.js";
 import { chatWithAI, generateChatTitle } from "../services/aiService.js";
 import { getUserById, getFileRecord } from "../services/fileService.js";
@@ -37,6 +38,18 @@ router.get("/:chatId", requireAuth, async (req, res) => {
   const chat = await getChatMessages(chatId);
   if (!chat) return res.status(404).json({ error: "Chat not found" });
   return res.status(200).json(chat);
+});
+
+router.delete("/:chatId", requireAuth, async (req, res) => {
+  try {
+    const chatId = req.params.chatId;
+    const userId = req.user.id;
+    await deleteChat(chatId, userId);
+    return res.status(200).json({ success: true });
+  } catch (error) {
+    console.error("Error deleting chat:", error);
+    return res.status(500).json({ error: "Failed to delete chat" });
+  }
 });
 
 router.post("/:chatId", requireAuth, async (req, res) => {

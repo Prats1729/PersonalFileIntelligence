@@ -39,7 +39,11 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
 
   const [activeScope, setActiveScope] = useState("All files");
   const [currentFolder, setCurrentFolder] = useState(null);
-  const [sidebarMode, setSidebarMode] = useState("details"); // NEW: Toggle between 'details' and 'chat'
+  const [sidebarMode, setSidebarMode] = useState("details"); // Toggle between 'details' and 'chat'
+  
+  // Chat History State
+  const [pastChats, setPastChats] = useState([]);
+  const [activeChatId, setActiveChatId] = useState(null);
 
   // This runs every time the component renders (like when the user types a letter)
   const filteredFiles = files.filter((file) => {
@@ -91,8 +95,43 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
     }
   };
 
+  const fetchChats = async () => {
+    try {
+      const res = await fetch("http://localhost:5000/api/chat", {
+        credentials: "include",
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setPastChats(data);
+      }
+    } catch (error) {
+      console.error("Error fetching chats:", error);
+    }
+  };
+
+  const handleDeleteChat = async (e, chatId) => {
+    e.stopPropagation(); // Prevent the chat button click from firing
+    try {
+      const res = await fetch(`http://localhost:5000/api/chat/${chatId}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      if (res.ok) {
+        if (activeChatId === chatId) {
+          setActiveChatId(null);
+        }
+        fetchChats();
+        toast.success("Chat deleted");
+      }
+    } catch (error) {
+      console.error("Error deleting chat:", error);
+      toast.error("Failed to delete chat");
+    }
+  };
+
   useEffect(() => {
     fetchFiles();
+    fetchChats();
   }, []);
 
   // Close upload modal on Escape key
@@ -388,6 +427,56 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
                   <ImageIcon className="w-3.5 h-3.5" />
                   <span>Images</span>
                 </button>
+              </nav>
+            </div>
+
+            {/* Recent Chats Section */}
+            <div className="pt-2 border-t border-[#232732]">
+              <div className="flex items-center justify-between px-2 mb-1.5">
+                <p className="text-[10px] font-mono uppercase tracking-wider text-[#64748b]">
+                  Recent Chats
+                </p>
+                <button
+                  onClick={() => {
+                    setActiveChatId(null);
+                    setSidebarMode("chat");
+                  }}
+                  className="p-1 hover:bg-[#232732] rounded text-[#64748b] hover:text-[#38bdf8] transition-colors"
+                  title="New Chat"
+                >
+                  <Plus className="w-3 h-3" />
+                </button>
+              </div>
+              <nav className="space-y-0.5 max-h-48 overflow-y-auto">
+                {pastChats.length === 0 ? (
+                  <p className="text-xs text-[#64748b] px-2 italic py-1">No past chats.</p>
+                ) : (
+                  pastChats.map((chat) => (
+                    <div key={chat.id} className="relative group flex items-center">
+                      <button
+                        onClick={() => {
+                          setActiveChatId(chat.id);
+                          setSidebarMode("chat");
+                        }}
+                        className={`w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded text-xs transition-colors text-left truncate pr-8 ${
+                          activeChatId === chat.id && sidebarMode === "chat"
+                            ? "font-medium bg-[#181b22] text-[#38bdf8] border border-[#2e3442]/60"
+                            : "text-[#94a3b8] hover:text-white hover:bg-[#181b22]/50 border border-transparent"
+                        }`}
+                      >
+                        <MessageSquare className="w-3 h-3 shrink-0" />
+                        <span className="truncate">{chat.title}</span>
+                      </button>
+                      <button
+                        onClick={(e) => handleDeleteChat(e, chat.id)}
+                        className="absolute right-1 p-1.5 opacity-0 group-hover:opacity-100 hover:bg-red-500/20 text-[#64748b] hover:text-red-400 rounded transition-all"
+                        title="Delete Chat"
+                      >
+                        <Trash className="w-3 h-3" />
+                      </button>
+                    </div>
+                  ))
+                )}
               </nav>
             </div>
           </div>
@@ -722,6 +811,7 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
             <div className={`absolute inset-0 ${sidebarMode === "chat" ? "block" : "hidden"}`}>
               <Chat
                 user={user}
+                activeChatId={activeChatId}
                 selectedFiles={selectedFiles}
                 onRemoveContext={(fileIdToRemove) => {
                   setSelectedIds(
@@ -729,6 +819,12 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
                   );
                 }}
                 onClearAllContext={() => setSelectedIds([])}
+                onChatCreated={(newChatId) => {
+                  setActiveChatId(newChatId);
+                  fetchChats();
+                  // Re-fetch a few seconds later to catch the LLM-generated title!
+                  setTimeout(fetchChats, 4000);
+                }}
               />
             </div>
 
@@ -820,7 +916,7 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
                   </div>
                 )}
               </div>
-            )}
+            </div>
           </div>
         </aside>
       </div>
