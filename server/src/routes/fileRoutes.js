@@ -1,16 +1,20 @@
 import express from "express";
 import multer from "multer";
 import { requireAuth } from "../middleware/authMiddleware.js";
-import { uploadFileToDrive, deleteFileFromDrive, getDriveFolders, createDriveFolder, moveFileToFolder } from "../services/driveService.js";
-import { getUserById, saveFileRecord, getFilesByUser, deleteFileRecord, getFileRecord, updateFileFolder } from "../services/fileService.js";
+import { uploadLimiter } from "../middleware/rateLimiter.js";
+import { uploadFileToDrive, deleteFileFromDrive, getDriveFolders, createDriveFolder } from "../services/driveService.js";
+import { getUserById, saveFileRecord, getFilesByUser, deleteFileRecord, getFileRecord, deleteFilesByFolder, getFilesByFolder, updateFileContextNote } from "../services/fileService.js";
 import { categorizeFilesBulk } from "../services/aiService.js";
 
 const router = express.Router();
-// Use memory storage for multer since we stream to Drive
-const upload = multer({ storage: multer.memoryStorage() });
+// Use memory storage for multer with a 50MB per-file safety limit
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 50 * 1024 * 1024 }, // 50MB limit
+});
 
 // Upload files
-router.post("/upload", requireAuth, upload.array("files"), async (req, res) => {
+router.post("/upload", requireAuth, uploadLimiter, upload.array("files"), async (req, res) => {
   if (!req.files || req.files.length === 0){
     return res.status(400).json({ error: "No file uploaded." });
   }
@@ -174,6 +178,52 @@ router.get("/", requireAuth, async (req, res) => {
   }
 });
 
+// Delete entire folder and all its files
+router.delete("/folder/:folderName", requireAuth, async (req, res) => {
+  const { folderName } = req.params;
+  try {
+    const user = await getUserById(req.user.id);
+    
+    // 1. Fetch all files inside this folder from DB so we have their drive_file_ids
+    const filesInFolder = await getFilesByFolder(req.user.id, folderName);
+
+    // 2. Delete each file individually from Google Drive
+    if (user && user.google_refresh_token) {
+      for (const file of filesInFolder) {
+        try {
+          await deleteFileFromDrive(user.google_refresh_token, file.drive_file_id);
+        } catch (driveFileErr) {
+          console.error(`Error deleting file "${file.original_name}" from Drive:`, driveFileErr);
+        }
+      }
+
+      // 3. Delete the folder container itself from Google Drive
+      try {
+        const driveFolders = await getDriveFolders(user.google_refresh_token);
+        const folder = driveFolders.find(
+          (f) => f.name.toLowerCase() === folderName.toLowerCase()
+        );
+        if (folder) {
+          await deleteFileFromDrive(user.google_refresh_token, folder.id);
+        }
+      } catch (driveFolderErr) {
+        console.error("Error deleting folder container from Drive:", driveFolderErr);
+      }
+    }
+
+    // 4. Delete all file records from database (case-insensitive)
+    const deletedFiles = await deleteFilesByFolder(req.user.id, folderName);
+
+    return res.status(200).json({
+      message: `Folder "${folderName}" and its ${deletedFiles.length} file(s) deleted successfully`,
+      deletedCount: deletedFiles.length,
+    });
+  } catch (error) {
+    console.error("Error deleting folder:", error);
+    return res.status(500).json({ error: "Failed to delete folder." });
+  }
+});
+
 router.delete("/:id", requireAuth, async (req, res) => {
     const file = await getFileRecord(req.user.id, req.params.id);
     if (!file){
@@ -194,8 +244,21 @@ router.delete("/:id", requireAuth, async (req, res) => {
     }
     
     return res.status(200).json({message: "File deleted successfully"});
+});
 
-
-})
+// Update context note for a file
+router.patch("/:id/note", requireAuth, async (req, res) => {
+  try {
+    const { contextNote } = req.body;
+    const updated = await updateFileContextNote(req.user.id, req.params.id, contextNote);
+    if (!updated) {
+      return res.status(404).json({ error: "File not found" });
+    }
+    return res.status(200).json(updated);
+  } catch (error) {
+    console.error("Error updating context note:", error);
+    return res.status(500).json({ error: "Failed to update context note." });
+  }
+});
 
 export default router;
