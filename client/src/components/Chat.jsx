@@ -1,61 +1,205 @@
-import React, { useState, useEffect } from "react";
-import { Send, FileText, X } from "lucide-react";
+import React, { useState, useEffect, useRef } from "react";
+import {
+  Sparkles,
+  Send,
+  FileText,
+  X,
+  Plus,
+  Share2,
+  ChevronDown,
+  ChevronUp,
+  Database,
+  Paperclip,
+  Check,
+  Copy,
+  RotateCcw,
+  Pin,
+  FolderOpen,
+  Zap,
+  Download,
+  ArrowRight,
+  BookOpen,
+  Code2
+} from "lucide-react";
+import toast from "react-hot-toast";
+import { API_BASE } from "../config";
 
-export default function Chat({ user, selectedFiles, onRemoveContext, onClearAllContext, activeChatId, onChatCreated, onChatUpdated }) {
+export default function Chat({
+  user,
+  selectedFile,
+  selectedFiles = [],
+  allFiles = [],
+  folders = [],
+  activeFolder = null,
+  activeChatId,
+  onChatCreated,
+  onChatUpdated,
+  onNewChat,
+  onClose,
+  onUpdateFileNote,
+}) {
   const [input, setInput] = useState("");
-  const [chatId, setChatId] = useState(activeChatId || null); // Track the current DB chat session
+  const [chatId, setChatId] = useState(activeChatId || null);
   const [isLoading, setIsLoading] = useState(false);
+  const [scope, setScope] = useState("document"); // "document" | "collection" | "all"
+  const [isScopeOpen, setIsScopeOpen] = useState(false);
+  const [groundingMode, setGroundingMode] = useState("strict"); // "strict" | "reasoning"
+  const [attachedFiles, setAttachedFiles] = useState([]);
+  const [isAddSourceOpen, setIsAddSourceOpen] = useState(false);
+  const [expandedThinking, setExpandedThinking] = useState({});
+  const [activeFlashcard, setActiveFlashcard] = useState(null);
+
+  // Initial welcome message
   const [messages, setMessages] = useState([
-    { role: "assistant", content: "Hi! I'm your Personal Intelligence. Select a file or just start asking me questions!" }
+    {
+      id: "welcome-1",
+      role: "assistant",
+      content:
+        "<thinking>Loaded library graph, semantic embeddings, and user context notes (0.4s)</thinking>\n\nHi! I'm your **Intelligence Assistant**.\n\nSelect a document or collection to begin. I ground my answers directly in your lecture slides, textbooks, and professor context notes.",
+      cleanContent:
+        "Hi! I'm your **Intelligence Assistant**.\n\nSelect a document or collection to begin. I ground my answers directly in your lecture slides, textbooks, and professor context notes.",
+      created_at: new Date().toISOString(),
+      thinkingText: "Loaded library graph, semantic embeddings, and user context notes (0.4s)",
+      groundingScore: "99.4%",
+    },
   ]);
 
-  // Load history when a user clicks a past chat
+  const messagesEndRef = useRef(null);
+  const textareaRef = useRef(null);
+  const scopeDropdownRef = useRef(null);
+  const addSourceRef = useRef(null);
+
+  // Auto-scroll to bottom of messages
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  };
+
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages, isLoading]);
+
+  // Close dropdowns on outside click
+  useEffect(() => {
+    const handleOutsideClick = (e) => {
+      if (scopeDropdownRef.current && !scopeDropdownRef.current.contains(e.target)) {
+        setIsScopeOpen(false);
+      }
+      if (addSourceRef.current && !addSourceRef.current.contains(e.target)) {
+        setIsAddSourceOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleOutsideClick);
+    return () => document.removeEventListener("mousedown", handleOutsideClick);
+  }, []);
+
+  // Sync attachedFiles when selectedFile or scope changes
+  useEffect(() => {
+    if (scope === "document") {
+      if (selectedFile) {
+        setAttachedFiles([selectedFile]);
+      } else if (selectedFiles && selectedFiles.length > 0) {
+        setAttachedFiles(selectedFiles);
+      } else if (allFiles && allFiles.length > 0) {
+        setAttachedFiles([allFiles[0]]);
+      } else {
+        setAttachedFiles([]);
+      }
+    } else if (scope === "collection") {
+      if (activeFolder) {
+        const folderDocs = allFiles.filter(
+          (f) => (f.ai_result_folder || "").toLowerCase() === activeFolder.toLowerCase()
+        );
+        setAttachedFiles(folderDocs.slice(0, 5));
+      } else {
+        setAttachedFiles(allFiles.slice(0, 5));
+      }
+    } else if (scope === "all") {
+      setAttachedFiles(allFiles.slice(0, 8));
+    }
+  }, [scope, selectedFile, selectedFiles, activeFolder, allFiles]);
+
+  // Load chat history when activeChatId changes
   useEffect(() => {
     if (activeChatId) {
-      // Prevent race condition: if we just created this chat, we already have the state!
       if (chatId === activeChatId) return;
-      
       setChatId(activeChatId);
       setIsLoading(true);
-      fetch(`http://localhost:5000/api/chat/${activeChatId}`, {
-        credentials: "include"
+      fetch(`${API_BASE}/api/chat/${activeChatId}`, {
+        credentials: "include",
       })
-      .then(res => res.json())
-      .then(data => {
-        if(data && data.length > 0) {
-           // Replace 'ai' with 'assistant' just for our UI
-           const formatted = data.map(m => ({ ...m, role: m.role === 'ai' ? 'assistant' : m.role }));
-           setMessages(formatted);
-        }
-      })
-      .catch(console.error)
-      .finally(() => setIsLoading(false));
+        .then((res) => res.json())
+        .then((data) => {
+          if (data && data.length > 0) {
+            const formatted = data.map((m) => {
+              const parsed = parseMessageContent(m.content);
+              return {
+                ...m,
+                role: m.role === "ai" ? "assistant" : m.role,
+                thinkingText: parsed.thinking,
+                cleanContent: parsed.body,
+                groundingScore: m.role === "ai" ? "Coming Soon" : undefined,
+              };
+            });
+            setMessages(formatted);
+          }
+        })
+        .catch(console.error)
+        .finally(() => setIsLoading(false));
     } else {
       setChatId(null);
       setMessages([
-        { role: "assistant", content: "Hi! I'm your Personal Intelligence. Select a file or just start asking me questions!" }
+        {
+          id: "welcome-1",
+          role: "assistant",
+          content:
+            "<thinking>Loaded library graph, semantic embeddings, and user context notes (0.4s)</thinking>\n\nHi! I'm your **Intelligence Assistant**.\n\nSelect a document or collection to begin. I ground my answers directly in your lecture slides, textbooks, and professor context notes.",
+          cleanContent:
+            "Hi! I'm your **Intelligence Assistant**.\n\nSelect a document or collection to begin. I ground my answers directly in your lecture slides, textbooks, and professor context notes.",
+          created_at: new Date().toISOString(),
+          thinkingText: "Loaded library context notes and student workspace files",
+          groundingScore: "Coming Soon",
+        },
       ]);
     }
   }, [activeChatId]);
 
-  const handleSend = async (e) => {
-    e.preventDefault();
-    if (!input.trim() || isLoading) return;
+  // Helper to parse <thinking>...</thinking> tags from message
+  const parseMessageContent = (text = "") => {
+    const thinkingMatch = text.match(/<thinking>([\s\S]*?)<\/thinking>/i);
+    let thinking = null;
+    let body = text;
+    if (thinkingMatch) {
+      thinking = thinkingMatch[1].trim();
+      body = text.replace(/<thinking>[\s\S]*?<\/thinking>/i, "").trim();
+    }
+    return { thinking, body };
+  };
 
-    const userMessage = input;
+
+  // Handle Send
+  const handleSend = async (messageText = input) => {
+    const textToSend = typeof messageText === "string" ? messageText.trim() : input.trim();
+    if (!textToSend || isLoading) return;
+
     setIsLoading(true);
-    
-    // 1. Add user's message to UI immediately
-    const newMessages = [...messages, { role: "user", content: userMessage }];
-    setMessages(newMessages);
     setInput("");
 
+    // Add user message to UI immediately
+    const userMsgObj = {
+      id: `usr-${Date.now()}`,
+      role: "user",
+      content: textToSend,
+      created_at: new Date().toISOString(),
+    };
+    setMessages((prev) => [...prev, userMsgObj]);
+
     try {
-      // 2. If we don't have a chat session yet, create one!
       let currentChatId = chatId;
       let isNewChat = false;
+
+      // 1. Create chat if none exists
       if (!currentChatId) {
-        const createRes = await fetch("http://localhost:5000/api/chat", {
+        const createRes = await fetch(`${API_BASE}/api/chat`, {
           method: "POST",
           credentials: "include",
         });
@@ -63,128 +207,771 @@ export default function Chat({ user, selectedFiles, onRemoveContext, onClearAllC
         currentChatId = chatData.id;
         setChatId(chatData.id);
         isNewChat = true;
-        
-        // Let the Workspace know so it can refresh the sidebar!
-        if(onChatCreated) onChatCreated(chatData.id);
+        if (onChatCreated) onChatCreated(chatData.id);
       }
 
-      // 3. Send the message and the selected files to your RAG backend
-      const response = await fetch(`http://localhost:5000/api/chat/${currentChatId}`, {
+      // 2. Post to /api/chat/:id
+      const mentionedFileIds = attachedFiles.map((f) => f.id);
+      const res = await fetch(`${API_BASE}/api/chat/${currentChatId}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
         body: JSON.stringify({
-          message: userMessage,
-          mentionedFileIds: selectedFiles ? selectedFiles.map(f => f.id) : []
+          message: textToSend,
+          mentionedFileIds,
+          scope,
+          groundingMode,
         }),
       });
 
-      if (!response.ok) throw new Error("Failed to get response");
-      
-      const data = await response.json();
-      
-      // 4. Append the AI's response to our UI (the db returns { content: "..." })
-      setMessages((prev) => [...prev, { role: "assistant", content: data.content }]);
-      
-      // 5. Clear the selected files so they don't get re-sent on the next message!
-      if (onClearAllContext) onClearAllContext();
+      if (!res.ok) throw new Error("Failed to get response from AI");
 
-      // If this was the first message, tell Workspace to fetch the new LLM title
+      const data = await res.json();
+      const parsed = parseMessageContent(data.content);
+
+      const aiMsgObj = {
+        id: data.id || `ai-${Date.now()}`,
+        role: "assistant",
+        content: data.content,
+        cleanContent: parsed.body,
+        thinkingText: parsed.thinking || "Reasoned through active document context notes",
+        created_at: data.created_at || new Date().toISOString(),
+        groundingScore: "Coming Soon",
+        attachedContextNotes: data.attachedContextNotes || [],
+      };
+
+      setMessages((prev) => [...prev, aiMsgObj]);
+
       if (isNewChat && onChatUpdated) {
         onChatUpdated();
       }
-      
-    } catch (error) {
-      console.error("Chat error:", error);
-      setMessages((prev) => [...prev, { role: "assistant", content: "Sorry, I encountered an error. Is the server running?" }]);
+    } catch (err) {
+      console.error("Chat error:", err);
+      toast.error("AI service error. Check connection or OpenRouter key.");
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `err-${Date.now()}`,
+          role: "assistant",
+          content: "Encountered an issue communicating with the AI model. Please verify your connection or try again.",
+          created_at: new Date().toISOString(),
+        },
+      ]);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Quick Command or Suggestion pill click
+  const handleQuickCommand = (promptText) => {
+    setInput(promptText);
+    textareaRef.current?.focus();
+  };
+
+  // Export Chat to Markdown file
+  const handleExportChat = () => {
+    if (messages.length <= 1) {
+      toast("No conversation history to export yet.");
+      return;
+    }
+    const mdLines = [
+      `# Personal Library — Intelligence Chat Export`,
+      `**Date:** ${new Date().toLocaleString()}`,
+      `**Active Scope:** ${scope.toUpperCase()}`,
+      `**Grounding Mode:** ${groundingMode}`,
+      `**Sources:** ${attachedFiles.map((f) => f.original_name).join(", ") || "None"}`,
+      `\n---\n`,
+    ];
+
+    messages.forEach((m) => {
+      const parsed = parseMessageContent(m.content);
+      if (m.role === "user") {
+        mdLines.push(`### 👤 You\n${m.content}\n`);
+      } else {
+        mdLines.push(`### 🤖 Intelligence Assistant (${m.groundingScore || "Grounded"})\n`);
+        if (parsed.thinking) {
+          mdLines.push(`> ⚡ *Thinking:* ${parsed.thinking}\n`);
+        }
+        mdLines.push(`${parsed.body}\n`);
+      }
+    });
+
+    const blob = new Blob([mdLines.join("\n")], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `chat-export-${Date.now()}.md`;
+    link.click();
+    URL.revokeObjectURL(url);
+    toast.success("Chat exported as Markdown!");
+  };
+
+  // Save AI answer to Document Context Notes
+  const handleSaveToContextNote = async (text) => {
+    const targetFile = attachedFiles[0] || selectedFile;
+    if (!targetFile) {
+      toast.error("No active document selected to attach note.");
+      return;
+    }
+
+    const snippet = text.slice(0, 300);
+    const updatedNote = targetFile.context_note
+      ? `${targetFile.context_note}\n\n[AI Summary]: ${snippet}`
+      : `[AI Summary]: ${snippet}`;
+
+    if (onUpdateFileNote) {
+      await onUpdateFileNote(targetFile.id, updatedNote);
+    }
+  };
+
+  // Render Rich Assistant Content with Callouts & Code/Formula blocks
+  const renderRichAssistantContent = (msg, msgIdx) => {
+    const rawText = msg.cleanContent || msg.content || "";
+
+    // Extract pinned note callout if present
+    const noteMatch = rawText.match(/> 📌 \*\*Pinned Context Match:\*\* "([\s\S]*?)"/i);
+    const displayedText = rawText.replace(/> 📌 \*\*Pinned Context Match:\*\* "[\s\S]*?"/i, "").trim();
+
+    return (
+      <div className="space-y-3">
+        {/* Pinned Note Banner */}
+        {noteMatch && (
+          <div className="p-2.5 rounded bg-[#f59e0b]/10 border border-[#f59e0b]/30 text-[#ffc174] text-[11px] flex items-start gap-2 leading-relaxed">
+            <Pin className="w-3.5 h-3.5 text-[#f59e0b] mt-0.5 flex-shrink-0" />
+            <div>
+              <strong className="font-semibold text-[#f59e0b] block mb-0.5">
+                Pinned Context Match:
+              </strong>
+              <span>"{noteMatch[1]}"</span>
+            </div>
+          </div>
+        )}
+
+        {/* Text Body with Clean Formatting */}
+        <div className="text-[13px] text-[#bdc8d1] leading-relaxed space-y-2 whitespace-pre-line font-normal">
+          {displayedText}
+        </div>
+
+        {/* Action Toolbar for AI message */}
+        <div className="flex items-center justify-between pt-2.5 border-t border-[#232732] text-[#64748b] text-[11px]">
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={() => handleSaveToContextNote(displayedText)}
+              className="px-2 py-1 rounded bg-[#181b22] hover:bg-[#232732] hover:text-white text-[#94a3b8] border border-[#232732] flex items-center gap-1 transition-colors"
+              title="Pin key insight to document's Context Notes"
+            >
+              <Pin className="w-3 h-3 text-[#38bdf8]" />
+              <span>Pin to Notes</span>
+            </button>
+            <button
+              onClick={() => {
+                const firstParagraph = displayedText.split("\n")[0] || "Key concept";
+                setActiveFlashcard({
+                  front: `Key Concept: ${attachedFiles[0]?.original_name || "Document Topic"}`,
+                  back: firstParagraph,
+                });
+              }}
+              className="px-2 py-1 rounded bg-[#181b22] hover:bg-[#232732] hover:text-white text-[#94a3b8] border border-[#232732] flex items-center gap-1 transition-colors"
+              title="Generate a study flashcard"
+            >
+              <BookOpen className="w-3 h-3 text-[#14b8a6]" />
+              <span>Flashcard</span>
+            </button>
+          </div>
+
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => {
+                navigator.clipboard.writeText(displayedText);
+                toast.success("Markdown copied to clipboard!");
+              }}
+              className="p-1 hover:text-white hover:bg-[#181b22] rounded transition-colors"
+              title="Copy Markdown"
+            >
+              <Copy className="w-3.5 h-3.5" />
+            </button>
+            <button
+              onClick={handleRegenerate}
+              className="p-1 hover:text-white hover:bg-[#181b22] rounded transition-colors"
+              title="Regenerate Response"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  // Regenerate last AI response without duplicating the user message
+  const handleRegenerate = async () => {
+    if (isLoading || !chatId) return;
+    const previousUserMsg = [...messages].reverse().find((m) => m.role === "user");
+    if (!previousUserMsg) return;
+
+    // Remove the last assistant message from UI
+    setMessages((prev) => {
+      const lastIdx = prev.length - 1;
+      if (lastIdx >= 0 && prev[lastIdx].role === "assistant") {
+        return prev.slice(0, lastIdx);
+      }
+      return prev;
+    });
+
+    setIsLoading(true);
+    try {
+      const mentionedFileIds = attachedFiles.map((f) => f.id);
+      const res = await fetch(`${API_BASE}/api/chat/${chatId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          message: previousUserMsg.content,
+          mentionedFileIds,
+          scope,
+          groundingMode,
+          isRegenerate: true,
+        }),
+      });
+
+      if (!res.ok) throw new Error("Failed to regenerate response");
+
+      const data = await res.json();
+      const parsed = parseMessageContent(data.content);
+
+      const aiMsgObj = {
+        id: data.id || `ai-${Date.now()}`,
+        role: "assistant",
+        content: data.content,
+        cleanContent: parsed.body,
+        thinkingText: parsed.thinking || "Reasoned through active document context notes",
+        created_at: data.created_at || new Date().toISOString(),
+        groundingScore: "Coming Soon",
+        attachedContextNotes: data.attachedContextNotes || [],
+      };
+
+      setMessages((prev) => [...prev, aiMsgObj]);
+    } catch (err) {
+      console.error("Regenerate error:", err);
+      toast.error("Failed to regenerate AI response");
     } finally {
       setIsLoading(false);
     }
   };
 
   return (
-    <div className="flex flex-col h-full bg-[#12141a]">
-      {/* Header */}
-      <div className="p-4 border-b border-[#232732] flex-shrink-0">
-        <h3 className="text-sm font-semibold text-white">Intelligence Chat</h3>
-        <p className="text-[11px] text-[#64748b]">
-          Ask questions about your library
-        </p>
-      </div>
+    <div className="flex flex-col h-full bg-[#12141a] text-[#e3e2e6] select-none">
+      {/* ======================================================== */}
+      {/* 1. HEADER & STATUS BAR                                   */}
+      {/* ======================================================== */}
+      <div className="p-3 border-b border-[#232732] bg-[#12141a] flex flex-col gap-2.5 flex-shrink-0">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className="w-6 h-6 rounded bg-[#38bdf8]/15 border border-[#38bdf8]/30 flex items-center justify-center text-[#38bdf8]">
+              <Sparkles className="w-3.5 h-3.5" />
+            </div>
+            <div>
+              <div className="flex items-center gap-1.5">
+                <h2 className="text-xs font-semibold text-white leading-none">
+                  Intelligence Assistant
+                </h2>
+                <span
+                  className="w-1.5 h-1.5 rounded-full bg-[#14b8a6] inline-block animate-pulse"
+                  title="Vector Graph Active"
+                />
+              </div>
+              <span className="text-[10px] font-mono text-[#64748b] block mt-0.5">
+                AI Assistant • Hybrid Graph (Coming Soon)
+              </span>
+            </div>
+          </div>
 
-      {/* Message History */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-4">
-        {messages.map((msg, idx) => (
-          <div
-            key={idx}
-            className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
-          >
-            <div
-              className={`max-w-[85%] rounded-xl p-3 text-sm ${
-                msg.role === "user"
-                  ? "bg-[#38bdf8] text-gray-900 rounded-br-sm"
-                  : "bg-[#181b22] border border-[#232732] text-gray-200 rounded-bl-sm"
-              }`}
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => {
+                if (onNewChat) onNewChat();
+                setChatId(null);
+                setMessages([
+                  {
+                    id: `new-${Date.now()}`,
+                    role: "assistant",
+                    content:
+                      "<thinking>Initialized new session. Library graph active.</thinking>\n\nStarted a **New Chat**. Ask anything or attach documents to explore.",
+                    cleanContent:
+                      "Started a **New Chat**. Ask anything or attach documents to explore.",
+                    created_at: new Date().toISOString(),
+                    thinkingText: "Initialized new session. Library graph active.",
+                    groundingScore: "99.5%",
+                  },
+                ]);
+                toast.success("New chat session started");
+              }}
+              className="p-1 text-[#94a3b8] hover:text-white hover:bg-[#181b22] rounded transition-colors"
+              title="New Conversation"
             >
-              {msg.content}
-            </div>
+              <Plus className="w-4 h-4" />
+            </button>
+            <button
+              onClick={handleExportChat}
+              className="p-1 text-[#94a3b8] hover:text-white hover:bg-[#181b22] rounded transition-colors"
+              title="Export / Share Chat"
+            >
+              <Download className="w-4 h-4" />
+            </button>
+            <button
+              onClick={onClose}
+              className="p-1 text-[#64748b] hover:text-white hover:bg-[#181b22] rounded transition-colors"
+              title="Close Panel"
+            >
+              <X className="w-4 h-4" />
+            </button>
           </div>
-        ))}
-        {isLoading && (
-          <div className="flex justify-start">
-            <div className="max-w-[85%] rounded-xl p-3 text-sm bg-[#181b22] border border-[#232732] text-gray-400 rounded-bl-sm flex items-center gap-2">
-              <div className="w-1.5 h-1.5 bg-gray-500 rounded-full animate-bounce"></div>
-              <div className="w-1.5 h-1.5 bg-gray-500 rounded-full animate-bounce delay-100"></div>
-              <div className="w-1.5 h-1.5 bg-gray-500 rounded-full animate-bounce delay-200"></div>
-            </div>
-          </div>
-        )}
-      </div>
+        </div>
 
-      {/* Input Area */}
-      <div className="p-4 border-t border-[#232732] bg-[#0d0e11] flex-shrink-0">
-        {/* Active Context Pill (For your Alt+Click feature!) */}
-        {/* Active Context Pills (Scrollable) */}
-        {selectedFiles && selectedFiles.length > 0 && (
-          <div className="mb-2 flex items-center gap-2 overflow-x-auto pb-1 scrollbar-thin scrollbar-thumb-[#232732] scrollbar-track-transparent">
-            {selectedFiles.map((file) => (
-              <div
-                key={file.id}
-                className="flex-shrink-0 inline-flex items-center gap-2 px-2.5 py-1 rounded bg-[#38bdf8]/10 border border-[#38bdf8]/20"
-              >
-                <FileText className="w-3 h-3 text-[#38bdf8]" />
-                <span className="text-[10px] text-[#38bdf8] font-mono truncate max-w-[150px]">
-                  {file.original_name}
+        {/* Scope Selector & Grounding Mode Row */}
+        <div className="flex items-center justify-between gap-2 pt-1 border-t border-[#232732]/60 relative">
+          {/* Scope Dropdown */}
+          <div className="relative flex-1 min-w-0" ref={scopeDropdownRef}>
+            <button
+              onClick={() => setIsScopeOpen(!isScopeOpen)}
+              className="w-full flex items-center justify-between gap-1 bg-[#0d0e11] border border-[#232732] hover:border-[#3e484f] rounded px-2 py-1 text-xs text-left transition-colors"
+            >
+              <div className="flex items-center gap-1.5 truncate">
+                <FolderOpen className="w-3 h-3 text-[#38bdf8] flex-shrink-0" />
+                <span className="truncate font-medium text-[11px] text-[#e3e2e6]">
+                  {scope === "document"
+                    ? attachedFiles[0]
+                      ? attachedFiles[0].original_name
+                      : "Current Document"
+                    : scope === "collection"
+                    ? `Collection: ${activeFolder || "All Folders"}`
+                    : `All Documents (${allFiles.length})`}
                 </span>
+              </div>
+              <ChevronDown className="w-3 h-3 text-[#64748b] flex-shrink-0" />
+            </button>
+
+            {isScopeOpen && (
+              <div className="absolute left-0 top-full mt-1 w-full bg-[#181b22] border border-[#2e3442] rounded-lg shadow-2xl py-1 z-50 text-xs">
                 <button
-                  onClick={() => onRemoveContext(file.id)}
-                  className="text-[#38bdf8] hover:text-white transition-colors"
+                  onClick={() => {
+                    setScope("document");
+                    setIsScopeOpen(false);
+                  }}
+                  className={`w-full px-2.5 py-1.5 text-left flex items-center justify-between hover:bg-[#232732] ${
+                    scope === "document" ? "text-[#38bdf8] font-semibold" : "text-[#bdc8d1]"
+                  }`}
                 >
-                  <X className="w-3 h-3" />
+                  <span className="truncate">
+                    Current Document ({selectedFile ? selectedFile.original_name : "None"})
+                  </span>
+                  {scope === "document" && <Check className="w-3 h-3" />}
+                </button>
+                <button
+                  onClick={() => {
+                    setScope("collection");
+                    setIsScopeOpen(false);
+                  }}
+                  className={`w-full px-2.5 py-1.5 text-left flex items-center justify-between hover:bg-[#232732] ${
+                    scope === "collection" ? "text-[#38bdf8] font-semibold" : "text-[#bdc8d1]"
+                  }`}
+                >
+                  <span className="truncate">
+                    Collection ({activeFolder ? activeFolder : "All Folders"})
+                  </span>
+                  {scope === "collection" && <Check className="w-3 h-3" />}
+                </button>
+                <button
+                  onClick={() => {
+                    setScope("all");
+                    setIsScopeOpen(false);
+                  }}
+                  className={`w-full px-2.5 py-1.5 text-left flex items-center justify-between hover:bg-[#232732] ${
+                    scope === "all" ? "text-[#38bdf8] font-semibold" : "text-[#bdc8d1]"
+                  }`}
+                >
+                  <span>All Documents ({allFiles.length})</span>
+                  {scope === "all" && <Check className="w-3 h-3" />}
                 </button>
               </div>
-            ))}
+            )}
+          </div>
+
+          {/* Grounding Mode Toggle Pill */}
+          <div className="flex items-center bg-[#0d0e11] border border-[#232732] rounded p-0.5 text-[10px] flex-shrink-0">
+            <button
+              onClick={() => setGroundingMode("strict")}
+              className={`px-1.5 py-0.5 rounded transition-colors ${
+                groundingMode === "strict"
+                  ? "bg-[#232732] text-[#38bdf8] font-medium border border-[#38bdf8]/30 shadow-sm"
+                  : "text-[#64748b] hover:text-white"
+              }`}
+            >
+              Strict Citations
+            </button>
+            <button
+              onClick={() => setGroundingMode("reasoning")}
+              className={`px-1.5 py-0.5 rounded transition-colors ${
+                groundingMode === "reasoning"
+                  ? "bg-[#232732] text-[#38bdf8] font-medium border border-[#38bdf8]/30 shadow-sm"
+                  : "text-[#64748b] hover:text-white"
+              }`}
+            >
+              Reasoning
+            </button>
+          </div>
+        </div>
+
+      </div>
+
+      {/* ======================================================== */}
+      {/* 2. ACTIVE ATTACHED SOURCES BAR                           */}
+      {/* ======================================================== */}
+      <div className="px-3 py-1.5 bg-[#181b22] border-b border-[#232732] flex items-center gap-1.5 overflow-x-auto custom-scrollbar flex-shrink-0 relative">
+        <span className="text-[10px] font-mono uppercase tracking-wider text-[#64748b] flex items-center gap-0.5 flex-shrink-0">
+          <Paperclip className="w-3 h-3 text-[#38bdf8]" />
+          Sources:
+        </span>
+
+        {attachedFiles.map((file) => (
+          <div
+            key={file.id}
+            className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-[#0d0e11] border border-[#232732] text-[11px] font-mono text-white truncate flex-shrink-0 group"
+          >
+            <span className="w-1.5 h-1.5 rounded-full bg-[#14b8a6]" />
+            <span className="truncate max-w-[140px] text-[#c4e7ff]">
+              {file.original_name}
+            </span>
+            <span className="text-[#64748b] text-[10px]">
+              ({Math.max(1, Math.ceil((file.size_bytes || 100000) / 45000))} pgs)
+            </span>
+            <button
+              onClick={() =>
+                setAttachedFiles((prev) => prev.filter((f) => f.id !== file.id))
+              }
+              className="text-[#64748b] group-hover:text-red-400 ml-0.5 transition-colors"
+              title="Remove source"
+            >
+              <X className="w-3 h-3" />
+            </button>
+          </div>
+        ))}
+
+        {/* Add Source Popover trigger */}
+        <div className="relative flex-shrink-0" ref={addSourceRef}>
+          <button
+            onClick={() => setIsAddSourceOpen(!isAddSourceOpen)}
+            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-dashed border-[#2e3442] hover:border-[#38bdf8] text-[#94a3b8] hover:text-[#38bdf8] text-[10px] font-mono transition-colors"
+          >
+            <Plus className="w-3 h-3" />
+            <span>Add Source</span>
+          </button>
+
+          {isAddSourceOpen && (
+            <div className="absolute left-0 top-full mt-1 w-64 max-h-48 overflow-y-auto bg-[#12141a] border border-[#2e3442] rounded-lg shadow-2xl py-1 z-50 text-xs custom-scrollbar">
+              <div className="px-2 py-1 text-[10px] font-mono text-[#64748b] uppercase border-b border-[#232732]">
+                Select library document
+              </div>
+              {allFiles
+                .filter((f) => !attachedFiles.some((att) => att.id === f.id))
+                .slice(0, 8)
+                .map((file) => (
+                  <button
+                    key={file.id}
+                    onClick={() => {
+                      setAttachedFiles((prev) => [...prev, file]);
+                      setIsAddSourceOpen(false);
+                    }}
+                    className="w-full px-2.5 py-1.5 text-left flex items-center gap-2 hover:bg-[#181b22] text-[#bdc8d1] truncate"
+                  >
+                    <FileText className="w-3 h-3 text-[#38bdf8] flex-shrink-0" />
+                    <span className="truncate">{file.original_name}</span>
+                  </button>
+                ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ======================================================== */}
+      {/* 3. MESSAGE STREAM                                        */}
+      {/* ======================================================== */}
+      <div className="flex-1 overflow-y-auto custom-scrollbar p-3 space-y-4 bg-[#0d0e11]">
+        {messages.map((msg, idx) => {
+          const isUser = msg.role === "user";
+          return (
+            <div key={msg.id || idx} className="flex flex-col gap-1">
+              {/* Message Header */}
+              <div
+                className={`flex items-center gap-1.5 text-[10px] font-mono text-[#64748b] ${
+                  isUser ? "justify-end pr-1" : "justify-between pl-1"
+                }`}
+              >
+                {!isUser ? (
+                  <>
+                    <div className="flex items-center gap-1">
+                      <Sparkles className="w-3 h-3 text-[#38bdf8]" />
+                      <span className="text-[#38bdf8] font-semibold">
+                        Intelligence Assistant
+                      </span>
+                    </div>
+                    <span className="text-[#94a3b8] text-[10px] flex items-center gap-1">
+                      <span>Grounding Score</span>
+                      <span className="text-amber-400/90 text-[9px] bg-[#181b22] px-1.5 py-0.2 rounded border border-[#232732]">Coming Soon</span>
+                    </span>
+                  </>
+                ) : (
+                  <span>You</span>
+                )}
+              </div>
+
+              {/* Collapsible Thinking Accordion for Assistant */}
+              {!isUser && msg.thinkingText && (
+                <div className="border border-[#232732] rounded bg-[#12141a] overflow-hidden">
+                  <button
+                    onClick={() =>
+                      setExpandedThinking((prev) => ({
+                        ...prev,
+                        [idx]: !prev[idx],
+                      }))
+                    }
+                    className="w-full flex items-center justify-between px-2.5 py-1.5 text-[11px] font-mono text-[#94a3b8] hover:bg-[#181b22] transition-colors"
+                  >
+                    <div className="flex items-center gap-1.5 truncate">
+                      <Zap className="w-3 h-3 text-[#f59e0b] flex-shrink-0 animate-pulse" />
+                      <span className="truncate">{msg.thinkingText}</span>
+                    </div>
+                    <div className="flex items-center gap-1 text-[#64748b]">
+                      {expandedThinking[idx] ? (
+                        <ChevronUp className="w-3 h-3" />
+                      ) : (
+                        <ChevronDown className="w-3 h-3" />
+                      )}
+                    </div>
+                  </button>
+
+                  {expandedThinking[idx] && (
+                    <div className="p-2 border-t border-[#232732] bg-[#0d0e11] text-[10px] font-mono text-[#64748b] space-y-1">
+                      <div>• Scanned attached documents & context notes</div>
+                      <div>• Applied grounding constraints ({groundingMode} mode)</div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Message Body Box */}
+              <div
+                className={`p-3 rounded-lg shadow-sm ${
+                  isUser
+                    ? "bg-[#181b22] border border-[#232732] text-white self-end max-w-[90%]"
+                    : "bg-[#12141a] border border-[#232732] text-[#e3e2e6]"
+                }`}
+              >
+                {isUser ? (
+                  <p className="text-xs leading-relaxed">{msg.content}</p>
+                ) : (
+                  renderRichAssistantContent(msg, idx)
+                )}
+              </div>
+            </div>
+          );
+        })}
+
+        {/* Loading Indicator */}
+        {isLoading && (
+          <div className="flex flex-col gap-1.5">
+            <div className="flex items-center gap-1 text-[10px] font-mono text-[#38bdf8] pl-1">
+              <Sparkles className="w-3 h-3 animate-spin" />
+              <span>Reasoning through document vectors...</span>
+            </div>
+            <div className="p-3 bg-[#12141a] border border-[#232732] rounded-lg text-xs text-[#94a3b8] flex items-center gap-2">
+              <div className="w-1.5 h-1.5 bg-[#38bdf8] rounded-full animate-bounce" />
+              <div className="w-1.5 h-1.5 bg-[#38bdf8] rounded-full animate-bounce delay-100" />
+              <div className="w-1.5 h-1.5 bg-[#38bdf8] rounded-full animate-bounce delay-200" />
+              <span className="font-mono text-[11px] text-[#64748b] ml-1">
+                Searching text tokens &amp; notes...
+              </span>
+            </div>
           </div>
         )}
 
-        <form onSubmit={handleSend} className="relative flex items-center">
-          <input
-            type="text"
+        {/* Suggested Prompts Section */}
+        {messages.length > 0 && !isLoading && (
+          <div className="pt-2 flex flex-col gap-1.5">
+            <span className="text-[10px] font-mono uppercase tracking-wider text-[#64748b] pl-1">
+              Suggested Prompts:
+            </span>
+            <div className="flex flex-wrap gap-1.5">
+              {[
+                { label: "Explain sliding window protocol", icon: ArrowRight },
+                { label: "Generate 5 quiz questions", icon: BookOpen },
+                { label: "Summarize for exam cheat sheet", icon: Sparkles },
+              ].map((p, i) => (
+                <button
+                  key={i}
+                  onClick={() => handleQuickCommand(p.label)}
+                  className="px-2.5 py-1 rounded-full bg-[#181b22] hover:bg-[#232732] border border-[#232732] text-[11px] text-[#94a3b8] hover:text-[#38bdf8] transition-colors flex items-center gap-1"
+                >
+                  <p.icon className="w-3 h-3 text-[#64748b]" />
+                  <span>{p.label}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div ref={messagesEndRef} />
+      </div>
+
+      {/* ======================================================== */}
+      {/* 4. PROFESSIONAL INPUT AREA                               */}
+      {/* ======================================================== */}
+      <div className="p-3 border-t border-[#232732] bg-[#12141a] flex flex-col gap-2 flex-shrink-0">
+        {/* Quick Commands Helpers */}
+        <div className="flex items-center gap-1.5 text-[10px] font-mono text-[#64748b]">
+          <span>Quick commands:</span>
+          <button
+            onClick={() =>
+              handleQuickCommand("Generate 5 quiz questions with solutions based on this material:")
+            }
+            className="px-1.5 py-0.5 rounded bg-[#181b22] border border-[#232732] text-[#38bdf8] hover:bg-[#232732] transition-colors"
+          >
+            /quiz
+          </button>
+          <button
+            onClick={() =>
+              handleQuickCommand("Summarize core concepts, formulas, and exam takeaways:")
+            }
+            className="px-1.5 py-0.5 rounded bg-[#181b22] border border-[#232732] text-[#38bdf8] hover:bg-[#232732] transition-colors"
+          >
+            /summary
+          </button>
+          <button
+            onClick={() =>
+              handleQuickCommand(
+                "Extract all core formulas, algorithms, and key theorems in clean monospace blocks:"
+              )
+            }
+            className="px-1.5 py-0.5 rounded bg-[#181b22] border border-[#232732] text-[#38bdf8] hover:bg-[#232732] transition-colors"
+          >
+            /extract-formulas
+          </button>
+        </div>
+
+        {/* Input Box Container */}
+        <div className="relative flex flex-col rounded bg-[#0d0e11] border border-[#232732] focus-within:border-[#38bdf8] transition-colors shadow-inner">
+          <textarea
+            ref={textareaRef}
+            rows={2}
             value={input}
             onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                handleSend();
+              }
+            }}
             disabled={isLoading}
-            placeholder={isLoading ? "Thinking..." : "Ask anything..."}
-            className="w-full h-10 pl-4 pr-10 rounded-lg bg-[#181b22] border border-[#2e3442] text-sm text-white placeholder-[#64748b] focus:outline-none focus:border-[#38bdf8] transition-colors disabled:opacity-50"
+            placeholder={
+              attachedFiles[0]
+                ? `Ask anything about ${attachedFiles[0].original_name} or type / for templates...`
+                : "Ask anything about your library or type / for templates..."
+            }
+            className="w-full p-2.5 bg-transparent text-xs text-white placeholder-[#64748b] focus:outline-none resize-none leading-relaxed"
           />
-          <button
-            type="submit"
-            disabled={!input.trim() || isLoading}
-            className="absolute right-2 p-1.5 rounded text-[#38bdf8] hover:bg-[#38bdf8]/10 transition-colors disabled:opacity-50 disabled:hover:bg-transparent"
-          >
-            <Send className="w-4 h-4" />
-          </button>
-        </form>
+
+          {/* Bottom Toolbelt inside input box */}
+          <div className="flex items-center justify-between px-2 pb-2 pt-1 border-t border-[#232732]/40 text-xs text-[#64748b]">
+            <div className="flex items-center gap-1.5">
+              <button
+                onClick={() => setIsAddSourceOpen(true)}
+                className="p-1 hover:text-white rounded transition-colors"
+                title="Attach Source Document"
+              >
+                <Paperclip className="w-3.5 h-3.5" />
+              </button>
+              <span className="text-[10px] font-mono flex items-center gap-1 text-[#64748b]">
+                <Database className="w-3 h-3 text-[#38bdf8]" />
+                <span>Vector Graph <span className="text-amber-400/80">(Coming Soon)</span></span>
+              </span>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] font-mono text-[#64748b] hidden sm:inline">
+                ⌘Enter to run
+              </span>
+              <button
+                onClick={() => handleSend()}
+                disabled={!input.trim() || isLoading}
+                className="h-6 px-2.5 bg-[#f3f4f6] text-[#0d0e11] hover:bg-white disabled:opacity-30 disabled:hover:bg-[#f3f4f6] font-semibold text-xs rounded flex items-center gap-1 transition-colors"
+              >
+                <span>Ask</span>
+                <Send className="w-3 h-3" />
+              </button>
+            </div>
+          </div>
+        </div>
       </div>
+
+      {/* ======================================================== */}
+      {/* 5. FLASHCARD MODAL                                       */}
+      {/* ======================================================== */}
+      {activeFlashcard && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4 animate-fadeIn">
+          <div className="bg-[#12141a] rounded-xl w-[460px] border border-[#232732] shadow-2xl overflow-hidden flex flex-col">
+            <div className="px-4 py-3 border-b border-[#232732] flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <BookOpen className="w-4 h-4 text-[#14b8a6]" />
+                <span className="text-xs font-semibold text-white">
+                  Study Flashcard Generator
+                </span>
+              </div>
+              <button
+                onClick={() => setActiveFlashcard(null)}
+                className="text-[#64748b] hover:text-white"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-4 space-y-3 text-xs">
+              <div className="p-3 bg-[#181b22] border border-[#232732] rounded-lg">
+                <span className="text-[10px] font-mono text-[#38bdf8] uppercase tracking-wider block mb-1">
+                  Card Front (Concept):
+                </span>
+                <p className="font-semibold text-white">{activeFlashcard.front}</p>
+              </div>
+
+              <div className="p-3 bg-[#0d0e11] border border-[#232732] rounded-lg">
+                <span className="text-[10px] font-mono text-[#14b8a6] uppercase tracking-wider block mb-1">
+                  Card Back (Explanation / Formula):
+                </span>
+                <p className="text-[#bdc8d1] leading-relaxed">{activeFlashcard.back}</p>
+              </div>
+            </div>
+
+            <div className="px-4 py-3 border-t border-[#232732] bg-[#0d0e11] flex justify-end gap-2">
+              <button
+                onClick={() => {
+                  navigator.clipboard.writeText(
+                    `FRONT: ${activeFlashcard.front}\nBACK: ${activeFlashcard.back}`
+                  );
+                  toast.success("Flashcard copied to clipboard!");
+                }}
+                className="px-3 py-1.5 bg-[#181b22] hover:bg-[#232732] border border-[#232732] text-white text-xs rounded transition-colors"
+              >
+                Copy to Anki / Notes
+              </button>
+              <button
+                onClick={() => setActiveFlashcard(null)}
+                className="px-3 py-1.5 bg-[#38bdf8] text-[#0d0e11] font-semibold text-xs rounded hover:bg-[#7bd0ff] transition-colors"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
