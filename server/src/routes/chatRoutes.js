@@ -18,6 +18,26 @@ import { extractTextFromBuffer } from "../services/extractionService.js";
 
 const router = Router();
 
+const COMMAND_EXPANSIONS = {
+  "/summary": "Summarize the core concepts, key formulas, and exam takeaways from this material:",
+  "/quiz": "Generate 5 practice exam questions with detailed answer keys based on this material:",
+  "/notes": "Extract structured, bulleted high-yield revision notes from this document:",
+  "/formulas": "Extract all mathematical formulas, theorems, algorithms, and definitions in clear monospace blocks:",
+  "/flashcards": "Create 4 high-yield flashcard pairs (Front: Concept/Question, Back: Explanation) from this material:",
+};
+
+function expandSlashCommand(text) {
+  if (!text || typeof text !== "string") return text;
+  const trimmed = text.trim();
+  for (const [cmd, expansion] of Object.entries(COMMAND_EXPANSIONS)) {
+    if (trimmed.toLowerCase().startsWith(cmd)) {
+      const remainder = trimmed.slice(cmd.length).trim();
+      return remainder ? `${expansion}\nSpecific focus: ${remainder}` : expansion;
+    }
+  }
+  return text;
+}
+
 router.use(chatLimiter);
 
 router.get("/", requireAuth, async (req, res) => {
@@ -90,10 +110,10 @@ router.post("/:chatId", requireAuth, async (req, res) => {
       }).catch(err => console.error("Failed to generate title", err));
     }
 
-    // STEP 3: Format the history for OpenRouter (Map "ai" to "assistant")
+    // STEP 3: Format the history for OpenRouter (Map "ai" to "assistant", expand slash commands)
     const formattedHistory = history.map((msg) => ({
       role: msg.role === "ai" ? "assistant" : "user",
-      content: msg.content,
+      content: msg.role === "user" ? expandSlashCommand(msg.content) : msg.content,
     }));
 
     const { mentionedFileIds, groundingMode = "strict", scope = "document" } = req.body;
@@ -122,11 +142,14 @@ router.post("/:chatId", requireAuth, async (req, res) => {
               });
             }
 
-            const buffer = await downloadFileBuffer(
-              user.google_refresh_token,
-              fileRecord.drive_file_id,
-            );
-            const text = await extractTextFromBuffer(buffer, fileRecord.mime_type);
+            let text = fileRecord.extracted_text;
+            if (!text) {
+              const buffer = await downloadFileBuffer(
+                user.google_refresh_token,
+                fileRecord.drive_file_id,
+              );
+              text = await extractTextFromBuffer(buffer, fileRecord.mime_type);
+            }
 
             // Limit text per file to 25k characters to prevent token overflow
             const truncatedText = text ? text.slice(0, 25000) : "No text content extracted.";
@@ -143,17 +166,11 @@ router.post("/:chatId", requireAuth, async (req, res) => {
     const systemPrompt = `You are the Intelligence Assistant for Personal Library — an advanced academic knowledge and document intelligence engine.
 Your purpose is to help students understand, analyze, and master their course materials, textbook slides, and exam context notes.
 
-${
-  groundingMode === "strict"
-    ? `GROUNDING MODE: STRICT CITATIONS
-- Answer using ONLY facts, equations, and definitions grounded in the provided documents and context notes.
-- Do NOT speculate or extrapolate outside the provided texts.
-- Include explicit citations in brackets for key statements, e.g. [Slide 18: rwnd] or [RFC 793 / Section 4] or [Source: Document Name].
-- If an answer is not present in the documents, state so clearly.`
-    : `GROUNDING MODE: REASONING & SYNTHESIS
-- Use the provided documents and context notes as foundational ground truth.
-- Provide comprehensive explanations, step-by-step reasoning, architectural breakdowns, formulas, and connections between concepts.`
-}
+GROUNDING & REASONING GUIDELINES:
+- Use the provided documents and context notes as primary ground truth.
+- Provide comprehensive explanations, step-by-step reasoning, architectural breakdowns, formulas, and connections between concepts.
+- Include clear source citations in brackets (e.g. [Slide 18] or [Source: Document Name]) when referencing specific document facts.
+- If a specific detail is not found in the documents, state what is missing while providing helpful academic guidance.
 
 SPECIAL INSTRUCTIONS:
 1. INTERNAL REASONING: Always prefix your response with an internal reasoning summary enclosed in <thinking>...</thinking> tags. Describe what you retrieved, analyzed, and synthesized, including a simulated timer (e.g., <thinking>Reasoned through congestion control mechanisms, rwnd buffer allocation, and professor notes (1.2s)</thinking>).

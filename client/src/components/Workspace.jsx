@@ -38,7 +38,9 @@ import {
   Menu,
   Keyboard,
   RefreshCw,
-  Edit3
+  Edit3,
+  Zap,
+  Sparkles
 } from "lucide-react";
 
 export default function Workspace({ user, onLogout, isLoggingOut }) {
@@ -89,6 +91,28 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
   const searchInputRef = useRef(null);
   const folderClickTimerRef = useRef(null);
 
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [isExtractingOcr, setIsExtractingOcr] = useState(false);
+  const [lastSyncedAt, setLastSyncedAt] = useState(new Date());
+  const [, setTick] = useState(0);
+
+  // Update relative time display every 30 seconds
+  useEffect(() => {
+    const timer = setInterval(() => setTick((t) => t + 1), 30000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const getSyncTimeText = () => {
+    if (isSyncing) return "Syncing with Drive...";
+    if (!lastSyncedAt) return "Drive Synced";
+    const diffSeconds = Math.max(0, Math.floor((new Date() - new Date(lastSyncedAt)) / 1000));
+    if (diffSeconds < 60) return "Synced just now";
+    const diffMins = Math.floor(diffSeconds / 60);
+    if (diffMins < 60) return `Synced ${diffMins}m ago`;
+    const diffHours = Math.floor(diffMins / 60);
+    return `Synced ${diffHours}h ago`;
+  };
+
   // 1. Data Fetching
   const fetchFiles = async () => {
     try {
@@ -98,9 +122,39 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
       if (res.ok) {
         const data = await res.json();
         setFiles(data);
+        setLastSyncedAt(new Date());
       }
     } catch (error) {
       console.error("Error fetching files:", error);
+    }
+  };
+
+  const handleManualSync = async () => {
+    setIsSyncing(true);
+    const syncToast = toast.loading("Syncing with Google Drive...");
+    try {
+      const res = await fetch(`${API_BASE}/api/files/sync`, {
+        method: "POST",
+        credentials: "include",
+      });
+      if (!res.ok) throw new Error("Sync failed on server");
+      const data = await res.json();
+      if (data.files) {
+        setFiles(data.files);
+      }
+      setLastSyncedAt(new Date());
+      const imported = data.stats?.importedCount || 0;
+      const pruned = data.stats?.prunedCount || 0;
+      if (imported > 0 || pruned > 0) {
+        toast.success(`Synced! +${imported} imported, -${pruned} pruned`, { id: syncToast });
+      } else {
+        toast.success("Google Drive is fully up to date!", { id: syncToast });
+      }
+    } catch (err) {
+      console.error("Manual sync error:", err);
+      toast.error("Could not sync with Google Drive", { id: syncToast });
+    } finally {
+      setIsSyncing(false);
     }
   };
 
@@ -266,9 +320,7 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
   // Active / Selected file for Inspector
   const selectedFile =
     selectedIds.length > 0
-      ? files.find((f) => f.id === selectedIds[0])
-      : sortedFiles.length > 0
-      ? sortedFiles[0]
+      ? files.find((f) => f.id === selectedIds[0]) || null
       : null;
 
   // Sync editing text with selected file
@@ -335,7 +387,12 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
         body: formData,
       });
       if (!res.ok) {
-        throw new Error("Upload failed on Backend");
+        const errData = await res.json().catch(() => ({}));
+        const serverError =
+          errData.error ||
+          errData.message ||
+          `Upload failed (Status ${res.status}: ${res.statusText || "Server error"})`;
+        throw new Error(serverError);
       }
       const data = await res.json();
       if (data.files && data.files.length > 0) {
@@ -352,9 +409,9 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
       setUploadNote("");
       setIsUploadModalOpen(false);
     } catch (error) {
-      console.error("Error:", error);
+      console.error("Upload Error:", error);
       setIsUploading(false);
-      toast.error("Failed to upload. Please try again!");
+      toast.error(error.message || "Failed to upload. Please try again!");
     }
   };
 
@@ -464,6 +521,32 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
     }
   };
 
+  // Handle On-Demand OCR Extraction
+  const handleRunOcr = async (fileId, force = false) => {
+    if (!fileId) return;
+    setIsExtractingOcr(true);
+    const ocrToast = toast.loading("Extracting text layer with OCR...");
+    try {
+      const url = `${API_BASE}/api/files/${fileId}/ocr${force ? "?force=true" : ""}`;
+      const res = await fetch(url, {
+        method: "POST",
+        credentials: "include",
+      });
+      if (!res.ok) throw new Error("OCR extraction failed");
+      const data = await res.json();
+      const extracted = data.extractedText || "";
+      setFiles((prev) =>
+        prev.map((f) => (f.id === fileId ? { ...f, extracted_text: extracted, status: "ready" } : f))
+      );
+      toast.success(`OCR complete! Extracted ${extracted.length} characters.`, { id: ocrToast });
+    } catch (err) {
+      console.error("OCR trigger error:", err);
+      toast.error("Failed to run OCR on document.", { id: ocrToast });
+    } finally {
+      setIsExtractingOcr(false);
+    }
+  };
+
   // 8. Delete Chat
   const handleDeleteChat = async (e, chatId) => {
     e.stopPropagation();
@@ -486,13 +569,15 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
   };
 
   // 9. Card and Folder Click Handlers
+  const toggleFileSelection = (fileId) => {
+    setSelectedIds((prev) =>
+      prev.includes(fileId) ? prev.filter((id) => id !== fileId) : [...prev, fileId]
+    );
+  };
+
   const handleRowClick = (e, file) => {
     if (e.metaKey || e.ctrlKey) {
-      if (!selectedIds.includes(file.id)) {
-        setSelectedIds([...selectedIds, file.id]);
-      } else {
-        setSelectedIds(selectedIds.filter((id) => id !== file.id));
-      }
+      toggleFileSelection(file.id);
     } else {
       setSelectedIds([file.id]);
       setSelectedFolders([]);
@@ -528,11 +613,11 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
     }
   };
 
-  const handleSelectAll = (e) => {
-    if (e.target.checked) {
-      setSelectedIds(sortedFiles.map((f) => f.id));
-    } else {
+  const handleSelectAll = () => {
+    if (allVisibleSelected) {
       setSelectedIds([]);
+    } else {
+      setSelectedIds(sortedFiles.map((f) => f.id));
     }
   };
 
@@ -567,10 +652,13 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
           </button>
           <div className="flex items-center gap-2">
             <span className="text-sm font-bold text-white tracking-tight">Personal Library</span>
-            <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-[#181b22] text-[#38bdf8] border border-[#232732] flex items-center gap-1.5">
-              <span className="w-1.5 h-1.5 rounded-full bg-[#14b8a6] animate-pulse"></span>
-              Drive Synced
-            </span>
+            <div
+              className="text-[11px] font-mono px-2 py-0.5 rounded bg-[#181b22] text-[#38bdf8] border border-[#232732] flex items-center gap-1.5 select-none"
+              title={lastSyncedAt ? `Last synced: ${new Date(lastSyncedAt).toLocaleTimeString()}` : "Drive sync status"}
+            >
+              <span className={`w-1.5 h-1.5 rounded-full ${isSyncing ? "bg-[#38bdf8] animate-ping" : "bg-[#14b8a6] animate-pulse"}`}></span>
+              <span>{getSyncTimeText()}</span>
+            </div>
           </div>
         </div>
 
@@ -615,11 +703,16 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
             <Keyboard className="w-4 h-4" />
           </button>
           <button
-            onClick={fetchFiles}
-            className="p-1.5 text-[#14b8a6] hover:text-[#38bdf8] hover:bg-[#181b22] rounded transition-colors"
-            title="Sync Status (Click to Refresh)"
+            onClick={handleManualSync}
+            disabled={isSyncing}
+            className={`p-1.5 rounded transition-colors ${
+              isSyncing
+                ? "text-[#38bdf8] bg-[#181b22]"
+                : "text-[#94a3b8] hover:text-[#38bdf8] hover:bg-[#181b22]"
+            }`}
+            title="Sync with Google Drive (Two-Way Sync)"
           >
-            <Cloud className="w-4 h-4" />
+            <RefreshCw className={`w-4 h-4 ${isSyncing ? "animate-spin text-[#38bdf8]" : ""}`} />
           </button>
           <div className="h-4 w-px bg-[#232732] mx-1"></div>
           <button
@@ -1108,14 +1201,12 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
                             : "hover:bg-[#12141a]/80"
                         }`}
                       >
-                        <td className="pl-2">
+                        <td className="pl-2" onClick={(e) => e.stopPropagation()}>
                           <input
                             type="checkbox"
                             checked={isSelected}
-                            onChange={(e) => {
-                              e.stopPropagation();
-                              handleRowClick(e, file);
-                            }}
+                            onClick={(e) => e.stopPropagation()}
+                            onChange={() => toggleFileSelection(file.id)}
                             className="rounded-sm border-[#2e3442] bg-transparent text-[#38bdf8] focus:ring-0 focus:ring-offset-0 h-3.5 w-3.5 cursor-pointer"
                           />
                         </td>
@@ -1360,8 +1451,8 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
                     <div className="p-3 bg-[#181b22] border border-[#232732] rounded flex gap-3 items-start">
                       <div className="w-12 h-16 bg-[#232732] border border-[#2e3442] rounded flex flex-col items-center justify-center text-red-400 flex-shrink-0 relative">
                         <FileText className="w-6 h-6" />
-                        <span className="font-mono text-[9px] text-[#94a3b8] mt-1">
-                          {Math.max(1, Math.ceil((selectedFile.size_bytes || 100000) / 45000))} pgs
+                        <span className="font-mono text-[9px] text-[#94a3b8] mt-1 uppercase font-semibold">
+                          {selectedFile.original_name?.split('.').pop() || "PDF"}
                         </span>
                       </div>
                       <div className="flex-1 min-w-0">
@@ -1430,18 +1521,66 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
                       )}
                     </div>
 
-                    {/* Semantic OCR Vector Preview Box */}
+                    {/* Semantic OCR Text Preview Box */}
                     <div className="flex flex-col gap-1.5">
                       <div className="flex items-center justify-between">
                         <label className="text-[11px] font-mono font-semibold uppercase tracking-wider text-[#64748b] flex items-center gap-1">
                           <Search className="w-3 h-3 text-[#14b8a6]" />
-                          <span>Semantic OCR Preview</span>
+                          <span>Extracted Document Text</span>
                         </label>
-                        <span className="font-mono text-[10px] bg-[#232732] text-amber-400/90 px-1.5 py-0.5 rounded border border-[#2b3040]">Coming Soon</span>
+                        {selectedFile.extracted_text && (
+                          <div className="flex items-center gap-1.5">
+                            <span className="font-mono text-[10px] bg-[#14b8a6]/10 text-[#14b8a6] px-1.5 py-0.5 rounded border border-[#14b8a6]/30">
+                              {selectedFile.extracted_text.length.toLocaleString()} chars
+                            </span>
+                            <button
+                              onClick={() => handleRunOcr(selectedFile.id, true)}
+                              disabled={isExtractingOcr}
+                              className="p-1 hover:text-[#38bdf8] text-[#94a3b8] rounded transition-colors disabled:opacity-50"
+                              title="Re-run OCR extraction"
+                            >
+                              <RefreshCw className={`w-3 h-3 ${isExtractingOcr ? "animate-spin text-[#38bdf8]" : ""}`} />
+                            </button>
+                            <button
+                              onClick={() => {
+                                navigator.clipboard.writeText(selectedFile.extracted_text);
+                                toast.success("OCR text copied to clipboard!");
+                              }}
+                              className="p-1 hover:text-white text-[#94a3b8] rounded transition-colors"
+                              title="Copy Extracted Text"
+                            >
+                              <Copy className="w-3 h-3" />
+                            </button>
+                          </div>
+                        )}
                       </div>
-                      <div className="p-2.5 bg-[#0d0e11] border border-[#232732] rounded font-mono text-[11px] text-[#94a3b8] leading-normal">
-                        OCR text extraction and deep semantic visual search pipeline are in active development.
-                      </div>
+
+                      {selectedFile.extracted_text ? (
+                        <div className="p-2.5 bg-[#0d0e11] border border-[#232732] rounded font-mono text-[11px] text-[#bdc8d1] leading-relaxed max-h-48 overflow-y-auto custom-scrollbar select-text whitespace-pre-wrap">
+                          {selectedFile.extracted_text}
+                        </div>
+                      ) : (
+                        <div className="p-4 bg-[#0d0e11] border border-dashed border-[#232732] rounded font-mono text-[11px] text-[#64748b] flex flex-col items-center justify-center gap-2.5 text-center">
+                          <span>No extracted text layer detected yet.</span>
+                          <button
+                            onClick={() => handleRunOcr(selectedFile.id)}
+                            disabled={isExtractingOcr}
+                            className="px-3 py-1.5 bg-[#181b22] hover:bg-[#232732] border border-[#232732] hover:border-[#38bdf8]/40 text-xs text-[#38bdf8] rounded font-mono flex items-center gap-1.5 transition-colors disabled:opacity-50 shadow-sm"
+                          >
+                            {isExtractingOcr ? (
+                              <>
+                                <span className="w-3 h-3 border-2 border-[#38bdf8] border-t-transparent rounded-full animate-spin" />
+                                <span>Extracting text...</span>
+                              </>
+                            ) : (
+                              <>
+                                <Sparkles className="w-3.5 h-3.5" />
+                                <span>Extract Text with OCR</span>
+                              </>
+                            )}
+                          </button>
+                        </div>
+                      )}
                     </div>
 
                     {/* File Specifications Grid */}

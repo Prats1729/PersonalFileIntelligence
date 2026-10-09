@@ -86,19 +86,47 @@ router.get("/google/callback", async (req, res) => {
  */
 router.get("/me", requireAuth, async (req, res) => {
   try {
+    const userId = req.user?.id;
+    const isUuid =
+      typeof userId === "string" &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(userId);
+
+    if (!isUuid) {
+      console.warn("⚠️ Invalid user ID in session token:", userId);
+      res.clearCookie("session_token", {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: "lax",
+      });
+      return res.status(401).json({ error: "Invalid session. Please sign in again." });
+    }
+
     const result = await query(
       "SELECT id, google_id, email, name, avatar_url, created_at FROM users WHERE id = $1",
-      [req.user.id],
+      [userId],
     );
 
     if (result.rows.length === 0) {
-      return res.status(404).json({ error: "User not found" });
+      res.clearCookie("session_token", {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: "lax",
+      });
+      return res.status(401).json({ error: "User session not found. Please sign in again." });
     }
 
     res.json({ user: result.rows[0] });
   } catch (err) {
-    console.error("Error fetching user profile:", err.message);
-    res.status(500).json({ error: "Internal server error" });
+    console.error("Error fetching user profile:", err);
+    if (err.message?.includes("invalid input syntax for type uuid")) {
+      res.clearCookie("session_token", {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: "lax",
+      });
+      return res.status(401).json({ error: "Session corrupted. Please sign in again." });
+    }
+    res.status(500).json({ error: "Internal server error", message: err.message });
   }
 });
 

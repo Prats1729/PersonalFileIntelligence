@@ -2,9 +2,11 @@ import express from "express";
 import multer from "multer";
 import { requireAuth } from "../middleware/authMiddleware.js";
 import { uploadLimiter } from "../middleware/rateLimiter.js";
-import { uploadFileToDrive, deleteFileFromDrive, getDriveFolders, createDriveFolder } from "../services/driveService.js";
-import { getUserById, saveFileRecord, getFilesByUser, deleteFileRecord, getFileRecord, deleteFilesByFolder, getFilesByFolder, updateFileContextNote } from "../services/fileService.js";
+import { uploadFileToDrive, deleteFileFromDrive, getDriveFolders, createDriveFolder, downloadFileBuffer } from "../services/driveService.js";
+import { getUserById, saveFileRecord, getFilesByUser, deleteFileRecord, getFileRecord, deleteFilesByFolder, getFilesByFolder, updateFileContextNote, updateFileExtractedText } from "../services/fileService.js";
 import { categorizeFilesBulk } from "../services/aiService.js";
+import { syncUserWithDrive } from "../services/syncService.js";
+import { extractDocumentText } from "../services/ocrService.js";
 
 const router = express.Router();
 // Use memory storage for multer with a 50MB per-file safety limit
@@ -63,73 +65,59 @@ router.post("/upload", requireAuth, uploadLimiter, upload.array("files"), async 
       });
     }
 
-    const savedFiles = [];
-    const failedFiles = [];
-
-    // 3. Process each file with fault isolation and direct folder upload
+    // 3. Pre-resolve or create any newly suggested folders so concurrent uploads don't race
+    const targetFolderByFileIndex = new Map();
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
+      const aiResultFolder = resultMap.get(i) || resultMap.get(file.originalname) || {
+        chosenExistingFolder: null,
+        suggestedNewFolder: null,
+      };
 
-      try {
-        const aiResultFolder = resultMap.get(i) || resultMap.get(file.originalname) || {
-          chosenExistingFolder: null,
-          suggestedNewFolder: null,
-        };
+      let targetFolder = null;
+      let finalFolderName = "Others";
 
-        let targetFolder = null;
-        let finalFolderName = "Others";
+      if (aiResultFolder.chosenExistingFolder && !aiResultFolder.suggestedNewFolder) {
+        targetFolder = existingFolders.find(
+          (f) => f.name.toLowerCase() === aiResultFolder.chosenExistingFolder.toLowerCase()
+        );
+        if (targetFolder) finalFolderName = targetFolder.name;
+      }
 
-        // Scenario A: AI chose an existing folder
-        if (
-          aiResultFolder.chosenExistingFolder &&
-          !aiResultFolder.suggestedNewFolder
-        ) {
-          targetFolder = existingFolders.find(
-            (f) => f.name.toLowerCase() === aiResultFolder.chosenExistingFolder.toLowerCase()
-          );
-          if (targetFolder) {
-            finalFolderName = targetFolder.name;
-          }
-        }
-
-        // Scenario B: AI suggested a new folder
-        if (!targetFolder && aiResultFolder.suggestedNewFolder) {
-          const trimmedNewName = aiResultFolder.suggestedNewFolder.trim();
-          // Check if created earlier in this batch
-          targetFolder = existingFolders.find(
-            (f) => f.name.toLowerCase() === trimmedNewName.toLowerCase()
-          );
-          if (!targetFolder) {
-            targetFolder = await createDriveFolder(
-              user.google_refresh_token,
-              trimmedNewName
-            );
-            existingFolders.push(targetFolder);
-          }
-          finalFolderName = targetFolder.name;
-        }
-
-        // Scenario C: File doesn't belong to any folder -> "Others"
+      if (!targetFolder && aiResultFolder.suggestedNewFolder) {
+        const trimmedNewName = aiResultFolder.suggestedNewFolder.trim();
+        targetFolder = existingFolders.find(
+          (f) => f.name.toLowerCase() === trimmedNewName.toLowerCase()
+        );
         if (!targetFolder) {
-          targetFolder = existingFolders.find((f) => f.name.toLowerCase() === "others");
-          if (!targetFolder) {
-            targetFolder = await createDriveFolder(
-              user.google_refresh_token,
-              "Others"
-            );
-            existingFolders.push(targetFolder);
-          }
-          finalFolderName = targetFolder.name;
+          targetFolder = await createDriveFolder(user.google_refresh_token, trimmedNewName);
+          existingFolders.push(targetFolder);
         }
+        finalFolderName = targetFolder.name;
+      }
 
-        // 1. Upload DIRECTLY into targetFolder on Drive (eliminates 2 extra API roundtrips)
+      if (!targetFolder) {
+        targetFolder = existingFolders.find((f) => f.name.toLowerCase() === "others");
+        if (!targetFolder) {
+          targetFolder = await createDriveFolder(user.google_refresh_token, "Others");
+          existingFolders.push(targetFolder);
+        }
+        finalFolderName = targetFolder.name;
+      }
+
+      targetFolderByFileIndex.set(i, { targetFolder, finalFolderName });
+    }
+
+    // 4. Concurrently upload each file directly into Drive and immediately record in DB
+    const uploadTasks = files.map(async (file, i) => {
+      const { targetFolder, finalFolderName } = targetFolderByFileIndex.get(i);
+      try {
         const driveMetadata = await uploadFileToDrive(
           user.google_refresh_token,
           file,
           targetFolder ? targetFolder.id : null
         );
 
-        // 2. Save record to DB with folder already populated (eliminates secondary update query)
         const fileRecord = await saveFileRecord(
           userId,
           driveMetadata,
@@ -138,15 +126,20 @@ router.post("/upload", requireAuth, uploadLimiter, upload.array("files"), async 
           finalFolderName
         );
 
-        savedFiles.push(fileRecord);
+        return { success: true, fileRecord };
       } catch (fileErr) {
         console.error(`Failed to upload "${file.originalname}":`, fileErr);
-        failedFiles.push({
+        return {
+          success: false,
           fileName: file.originalname,
           error: fileErr.message || "Upload failed",
-        });
+        };
       }
-    }
+    });
+
+    const results = await Promise.all(uploadTasks);
+    const savedFiles = results.filter((r) => r.success).map((r) => r.fileRecord);
+    const failedFiles = results.filter((r) => !r.success).map((r) => ({ fileName: r.fileName, error: r.error }));
 
     if (savedFiles.length === 0 && failedFiles.length > 0) {
       return res.status(500).json({
@@ -160,10 +153,43 @@ router.post("/upload", requireAuth, uploadLimiter, upload.array("files"), async 
       files: savedFiles,
       failedFiles,
     });
+
+    // Asynchronous Background OCR: extract and index text without delaying the upload response
+    (async () => {
+      for (const file of files) {
+        const saved = savedFiles.find((s) => s.original_name === file.originalname);
+        if (!saved) continue;
+        try {
+          const text = await extractDocumentText(file.buffer, file.mimetype, file.originalname);
+          if (text) {
+            await updateFileExtractedText(saved.id, text, "ready");
+            console.log(`[OCR Complete] Extracted ${text.length} chars for "${file.originalname}"`);
+          }
+        } catch (ocrErr) {
+          console.warn(`[OCR Error] Background extraction failed for "${file.originalname}":`, ocrErr.message);
+        }
+      }
+    })();
     
   } catch (error) {
     console.error("Upload error:", error);
     res.status(500).json({ error: "Failed to upload file." });
+  }
+});
+
+// Trigger on-demand two-way sync
+router.post("/sync", requireAuth, async (req, res) => {
+  try {
+    const stats = await syncUserWithDrive(req.user.id);
+    const updatedFiles = await getFilesByUser(req.user.id);
+    res.json({
+      message: "Sync completed successfully",
+      stats,
+      files: updatedFiles,
+    });
+  } catch (error) {
+    console.error("Sync error:", error);
+    res.status(500).json({ error: "Failed to sync with Google Drive." });
   }
 });
 
@@ -258,6 +284,49 @@ router.patch("/:id/note", requireAuth, async (req, res) => {
   } catch (error) {
     console.error("Error updating context note:", error);
     return res.status(500).json({ error: "Failed to update context note." });
+  }
+});
+
+// On-demand OCR / text extraction for a file
+router.post("/:id/ocr", requireAuth, async (req, res) => {
+  const userId = req.user.id;
+  const fileId = req.params.id;
+  const force = req.query.force === "true";
+  try {
+    const fileRecord = await getFileRecord(userId, fileId);
+    if (!fileRecord) return res.status(404).json({ error: "File not found" });
+
+    const user = await getUserById(userId);
+    if (!user?.google_refresh_token) {
+      return res.status(401).json({ error: "Google authentication required" });
+    }
+
+    // If text already exists and is substantive (not force-refreshed, and not boilerplate like "-- 1 of 1 --")
+    if (fileRecord.extracted_text && !force && fileRecord.extracted_text.trim().length > 35) {
+      return res.status(200).json({
+        success: true,
+        file: fileRecord,
+        extractedText: fileRecord.extracted_text,
+      });
+    }
+
+    // Download buffer from Google Drive & extract via ocrService
+    const buffer = await downloadFileBuffer(user.google_refresh_token, fileRecord.drive_file_id);
+    let text = await extractDocumentText(buffer, fileRecord.mime_type, fileRecord.original_name);
+
+    if (!text || text.trim().length === 0) {
+      text = "No readable text detected in this document.";
+    }
+
+    const updated = await updateFileExtractedText(fileRecord.id, text, "ready");
+    return res.status(200).json({
+      success: true,
+      file: updated,
+      extractedText: text,
+    });
+  } catch (err) {
+    console.error("On-demand OCR error:", err);
+    return res.status(500).json({ error: err.message || "Failed to extract text from document" });
   }
 });
 

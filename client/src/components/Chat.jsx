@@ -24,6 +24,14 @@ import {
 import toast from "react-hot-toast";
 import { API_BASE } from "../config";
 
+const COMMAND_CHIPS = [
+  { prefix: "/summary", label: "Summary", icon: Sparkles, desc: "Summarize key concepts & exam takeaways" },
+  { prefix: "/quiz", label: "Quiz", icon: BookOpen, desc: "Generate 5 practice exam questions with solutions" },
+  { prefix: "/notes", label: "Notes", icon: FileText, desc: "Extract structured revision notes" },
+  { prefix: "/formulas", label: "Formulas", icon: Code2, desc: "Extract key formulas, theorems & algorithms" },
+  { prefix: "/flashcards", label: "Flashcards", icon: Zap, desc: "Generate 4 flashcard study pairs" },
+];
+
 export default function Chat({
   user,
   selectedFile,
@@ -41,7 +49,9 @@ export default function Chat({
   const [input, setInput] = useState("");
   const [chatId, setChatId] = useState(activeChatId || null);
   const [isLoading, setIsLoading] = useState(false);
-  const [scope, setScope] = useState("document"); // "document" | "collection" | "all"
+  const [scope, setScope] = useState(
+    (selectedFiles && selectedFiles.length > 0) || selectedFile ? "document" : "all"
+  );
   const [isScopeOpen, setIsScopeOpen] = useState(false);
   const [groundingMode, setGroundingMode] = useState("strict"); // "strict" | "reasoning"
   const [attachedFiles, setAttachedFiles] = useState([]);
@@ -92,15 +102,13 @@ export default function Chat({
     return () => document.removeEventListener("mousedown", handleOutsideClick);
   }, []);
 
-  // Sync attachedFiles when selectedFile or scope changes
+  // Sync attachedFiles when selectedFiles, selectedFile, or scope changes
   useEffect(() => {
     if (scope === "document") {
-      if (selectedFile) {
-        setAttachedFiles([selectedFile]);
-      } else if (selectedFiles && selectedFiles.length > 0) {
+      if (selectedFiles && selectedFiles.length > 0) {
         setAttachedFiles(selectedFiles);
-      } else if (allFiles && allFiles.length > 0) {
-        setAttachedFiles([allFiles[0]]);
+      } else if (selectedFile) {
+        setAttachedFiles([selectedFile]);
       } else {
         setAttachedFiles([]);
       }
@@ -260,6 +268,12 @@ export default function Chat({
     } finally {
       setIsLoading(false);
     }
+  };
+
+  // Handle Slash Command Chip Click
+  const handleCommandClick = (cmdPrefix) => {
+    setInput(`${cmdPrefix} `);
+    textareaRef.current?.focus();
   };
 
   // Quick Command or Suggestion pill click
@@ -477,12 +491,9 @@ export default function Chat({
                 </h2>
                 <span
                   className="w-1.5 h-1.5 rounded-full bg-[#14b8a6] inline-block animate-pulse"
-                  title="Vector Graph Active"
+                  title="Assistant Active"
                 />
               </div>
-              <span className="text-[10px] font-mono text-[#64748b] block mt-0.5">
-                AI Assistant • Hybrid Graph (Coming Soon)
-              </span>
             </div>
           </div>
 
@@ -527,28 +538,31 @@ export default function Chat({
             </button>
           </div>
         </div>
-
-        {/* Scope Selector & Grounding Mode Row */}
-        <div className="flex items-center justify-between gap-2 pt-1 border-t border-[#232732]/60 relative">
+        {/* Scope Selector Row */}
+        <div className="pt-1 border-t border-[#232732]/60 relative">
           {/* Scope Dropdown */}
-          <div className="relative flex-1 min-w-0" ref={scopeDropdownRef}>
+          <div className="relative w-full" ref={scopeDropdownRef}>
             <button
               onClick={() => setIsScopeOpen(!isScopeOpen)}
-              className="w-full flex items-center justify-between gap-1 bg-[#0d0e11] border border-[#232732] hover:border-[#3e484f] rounded px-2 py-1 text-xs text-left transition-colors"
+              className="w-full flex items-center justify-between gap-1 bg-[#0d0e11] border border-[#232732] hover:border-[#3e484f] rounded px-2.5 py-1.5 text-xs text-left transition-colors"
             >
               <div className="flex items-center gap-1.5 truncate">
-                <FolderOpen className="w-3 h-3 text-[#38bdf8] flex-shrink-0" />
+                <FolderOpen className="w-3.5 h-3.5 text-[#38bdf8] flex-shrink-0" />
                 <span className="truncate font-medium text-[11px] text-[#e3e2e6]">
                   {scope === "document"
-                    ? attachedFiles[0]
-                      ? attachedFiles[0].original_name
-                      : "Current Document"
+                    ? attachedFiles.length > 1
+                      ? `${attachedFiles.length} Documents Selected`
+                      : attachedFiles[0]
+                      ? `Document: ${attachedFiles[0].original_name}`
+                      : selectedFile
+                      ? `Document: ${selectedFile.original_name}`
+                      : "No Document Selected"
                     : scope === "collection"
                     ? `Collection: ${activeFolder || "All Folders"}`
                     : `All Documents (${allFiles.length})`}
                 </span>
               </div>
-              <ChevronDown className="w-3 h-3 text-[#64748b] flex-shrink-0" />
+              <ChevronDown className="w-3.5 h-3.5 text-[#64748b] flex-shrink-0" />
             </button>
 
             {isScopeOpen && (
@@ -563,7 +577,13 @@ export default function Chat({
                   }`}
                 >
                   <span className="truncate">
-                    Current Document ({selectedFile ? selectedFile.original_name : "None"})
+                    {attachedFiles.length > 1
+                      ? `Selected Documents (${attachedFiles.length})`
+                      : attachedFiles[0]
+                      ? `Current Document (${attachedFiles[0].original_name})`
+                      : selectedFile
+                      ? `Current Document (${selectedFile.original_name})`
+                      : "Current Document (None)"}
                   </span>
                   {scope === "document" && <Check className="w-3 h-3" />}
                 </button>
@@ -596,101 +616,8 @@ export default function Chat({
               </div>
             )}
           </div>
-
-          {/* Grounding Mode Toggle Pill */}
-          <div className="flex items-center bg-[#0d0e11] border border-[#232732] rounded p-0.5 text-[10px] flex-shrink-0">
-            <button
-              onClick={() => setGroundingMode("strict")}
-              className={`px-1.5 py-0.5 rounded transition-colors ${
-                groundingMode === "strict"
-                  ? "bg-[#232732] text-[#38bdf8] font-medium border border-[#38bdf8]/30 shadow-sm"
-                  : "text-[#64748b] hover:text-white"
-              }`}
-            >
-              Strict Citations
-            </button>
-            <button
-              onClick={() => setGroundingMode("reasoning")}
-              className={`px-1.5 py-0.5 rounded transition-colors ${
-                groundingMode === "reasoning"
-                  ? "bg-[#232732] text-[#38bdf8] font-medium border border-[#38bdf8]/30 shadow-sm"
-                  : "text-[#64748b] hover:text-white"
-              }`}
-            >
-              Reasoning
-            </button>
-          </div>
         </div>
 
-      </div>
-
-      {/* ======================================================== */}
-      {/* 2. ACTIVE ATTACHED SOURCES BAR                           */}
-      {/* ======================================================== */}
-      <div className="px-3 py-1.5 bg-[#181b22] border-b border-[#232732] flex items-center gap-1.5 overflow-x-auto custom-scrollbar flex-shrink-0 relative">
-        <span className="text-[10px] font-mono uppercase tracking-wider text-[#64748b] flex items-center gap-0.5 flex-shrink-0">
-          <Paperclip className="w-3 h-3 text-[#38bdf8]" />
-          Sources:
-        </span>
-
-        {attachedFiles.map((file) => (
-          <div
-            key={file.id}
-            className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-[#0d0e11] border border-[#232732] text-[11px] font-mono text-white truncate flex-shrink-0 group"
-          >
-            <span className="w-1.5 h-1.5 rounded-full bg-[#14b8a6]" />
-            <span className="truncate max-w-[140px] text-[#c4e7ff]">
-              {file.original_name}
-            </span>
-            <span className="text-[#64748b] text-[10px]">
-              ({Math.max(1, Math.ceil((file.size_bytes || 100000) / 45000))} pgs)
-            </span>
-            <button
-              onClick={() =>
-                setAttachedFiles((prev) => prev.filter((f) => f.id !== file.id))
-              }
-              className="text-[#64748b] group-hover:text-red-400 ml-0.5 transition-colors"
-              title="Remove source"
-            >
-              <X className="w-3 h-3" />
-            </button>
-          </div>
-        ))}
-
-        {/* Add Source Popover trigger */}
-        <div className="relative flex-shrink-0" ref={addSourceRef}>
-          <button
-            onClick={() => setIsAddSourceOpen(!isAddSourceOpen)}
-            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-dashed border-[#2e3442] hover:border-[#38bdf8] text-[#94a3b8] hover:text-[#38bdf8] text-[10px] font-mono transition-colors"
-          >
-            <Plus className="w-3 h-3" />
-            <span>Add Source</span>
-          </button>
-
-          {isAddSourceOpen && (
-            <div className="absolute left-0 top-full mt-1 w-64 max-h-48 overflow-y-auto bg-[#12141a] border border-[#2e3442] rounded-lg shadow-2xl py-1 z-50 text-xs custom-scrollbar">
-              <div className="px-2 py-1 text-[10px] font-mono text-[#64748b] uppercase border-b border-[#232732]">
-                Select library document
-              </div>
-              {allFiles
-                .filter((f) => !attachedFiles.some((att) => att.id === f.id))
-                .slice(0, 8)
-                .map((file) => (
-                  <button
-                    key={file.id}
-                    onClick={() => {
-                      setAttachedFiles((prev) => [...prev, file]);
-                      setIsAddSourceOpen(false);
-                    }}
-                    className="w-full px-2.5 py-1.5 text-left flex items-center gap-2 hover:bg-[#181b22] text-[#bdc8d1] truncate"
-                  >
-                    <FileText className="w-3 h-3 text-[#38bdf8] flex-shrink-0" />
-                    <span className="truncate">{file.original_name}</span>
-                  </button>
-                ))}
-            </div>
-          )}
-        </div>
       </div>
 
       {/* ======================================================== */}
@@ -708,18 +635,12 @@ export default function Chat({
                 }`}
               >
                 {!isUser ? (
-                  <>
-                    <div className="flex items-center gap-1">
-                      <Sparkles className="w-3 h-3 text-[#38bdf8]" />
-                      <span className="text-[#38bdf8] font-semibold">
-                        Intelligence Assistant
-                      </span>
-                    </div>
-                    <span className="text-[#94a3b8] text-[10px] flex items-center gap-1">
-                      <span>Grounding Score</span>
-                      <span className="text-amber-400/90 text-[9px] bg-[#181b22] px-1.5 py-0.2 rounded border border-[#232732]">Coming Soon</span>
+                  <div className="flex items-center gap-1">
+                    <Sparkles className="w-3 h-3 text-[#38bdf8]" />
+                    <span className="text-[#38bdf8] font-semibold">
+                      Intelligence Assistant
                     </span>
-                  </>
+                  </div>
                 ) : (
                   <span>You</span>
                 )}
@@ -795,31 +716,6 @@ export default function Chat({
           </div>
         )}
 
-        {/* Suggested Prompts Section */}
-        {messages.length > 0 && !isLoading && (
-          <div className="pt-2 flex flex-col gap-1.5">
-            <span className="text-[10px] font-mono uppercase tracking-wider text-[#64748b] pl-1">
-              Suggested Prompts:
-            </span>
-            <div className="flex flex-wrap gap-1.5">
-              {[
-                { label: "Explain sliding window protocol", icon: ArrowRight },
-                { label: "Generate 5 quiz questions", icon: BookOpen },
-                { label: "Summarize for exam cheat sheet", icon: Sparkles },
-              ].map((p, i) => (
-                <button
-                  key={i}
-                  onClick={() => handleQuickCommand(p.label)}
-                  className="px-2.5 py-1 rounded-full bg-[#181b22] hover:bg-[#232732] border border-[#232732] text-[11px] text-[#94a3b8] hover:text-[#38bdf8] transition-colors flex items-center gap-1"
-                >
-                  <p.icon className="w-3 h-3 text-[#64748b]" />
-                  <span>{p.label}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-
         <div ref={messagesEndRef} />
       </div>
 
@@ -827,35 +723,22 @@ export default function Chat({
       {/* 4. PROFESSIONAL INPUT AREA                               */}
       {/* ======================================================== */}
       <div className="p-3 border-t border-[#232732] bg-[#12141a] flex flex-col gap-2 flex-shrink-0">
-        {/* Quick Commands Helpers */}
-        <div className="flex items-center gap-1.5 text-[10px] font-mono text-[#64748b]">
-          <span>Quick commands:</span>
-          <button
-            onClick={() =>
-              handleQuickCommand("Generate 5 quiz questions with solutions based on this material:")
-            }
-            className="px-1.5 py-0.5 rounded bg-[#181b22] border border-[#232732] text-[#38bdf8] hover:bg-[#232732] transition-colors"
-          >
-            /quiz
-          </button>
-          <button
-            onClick={() =>
-              handleQuickCommand("Summarize core concepts, formulas, and exam takeaways:")
-            }
-            className="px-1.5 py-0.5 rounded bg-[#181b22] border border-[#232732] text-[#38bdf8] hover:bg-[#232732] transition-colors"
-          >
-            /summary
-          </button>
-          <button
-            onClick={() =>
-              handleQuickCommand(
-                "Extract all core formulas, algorithms, and key theorems in clean monospace blocks:"
-              )
-            }
-            className="px-1.5 py-0.5 rounded bg-[#181b22] border border-[#232732] text-[#38bdf8] hover:bg-[#232732] transition-colors"
-          >
-            /extract-formulas
-          </button>
+        {/* Command Chips Row */}
+        <div className="flex items-center gap-1.5 overflow-x-auto custom-scrollbar pb-1">
+          <span className="text-[10px] font-mono text-[#64748b] flex-shrink-0 uppercase tracking-wider">
+            Commands:
+          </span>
+          {COMMAND_CHIPS.map((cmd) => (
+            <button
+              key={cmd.prefix}
+              onClick={() => handleCommandClick(cmd.prefix)}
+              className="px-2 py-0.5 rounded-full bg-[#181b22] hover:bg-[#232732] border border-[#232732] hover:border-[#38bdf8]/40 text-[#94a3b8] hover:text-[#38bdf8] flex items-center gap-1 transition-colors flex-shrink-0 font-mono text-[11px]"
+              title={cmd.desc}
+            >
+              <cmd.icon className="w-3 h-3 text-[#38bdf8]" />
+              <span>{cmd.prefix}</span>
+            </button>
+          ))}
         </div>
 
         {/* Input Box Container */}
@@ -872,11 +755,7 @@ export default function Chat({
               }
             }}
             disabled={isLoading}
-            placeholder={
-              attachedFiles[0]
-                ? `Ask anything about ${attachedFiles[0].original_name} or type / for templates...`
-                : "Ask anything about your library or type / for templates..."
-            }
+            placeholder="Ask a question or type /summary, /quiz..."
             className="w-full p-2.5 bg-transparent text-xs text-white placeholder-[#64748b] focus:outline-none resize-none leading-relaxed"
           />
 
@@ -890,10 +769,6 @@ export default function Chat({
               >
                 <Paperclip className="w-3.5 h-3.5" />
               </button>
-              <span className="text-[10px] font-mono flex items-center gap-1 text-[#64748b]">
-                <Database className="w-3 h-3 text-[#38bdf8]" />
-                <span>Vector Graph <span className="text-amber-400/80">(Coming Soon)</span></span>
-              </span>
             </div>
 
             <div className="flex items-center gap-2">
