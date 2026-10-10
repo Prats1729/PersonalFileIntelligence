@@ -55,6 +55,21 @@ This document tracks all self-approved architectural decisions, alternatives con
 - **Rationale:** System prompt containment preserves instruction hierarchy and prevents documents from overriding system directives.
 
 ### DEC-08: Per-User Mutex for Google Drive Token Refreshes (SEC-08)
-- **Decision:** Implement an in-flight promise cache / mutex per user ID so concurrent file uploads share a single token refresh promise.
+- **Decision:** Implement an in-flight promise cache / client cache per refresh token so concurrent file operations share active access tokens.
 - **Alternatives Considered:** Periodic cron-only token refresh.
 - **Rationale:** Completely prevents token refresh storms and Google API 429 / revocation errors when uploading batches of documents.
+
+### DEC-09: Explicit HS256 Algorithm Constraint on JWT Verification (SEC-11)
+- **Decision:** Add explicit `{ algorithms: ['HS256'] }` constraint to `jwt.verify()` in `authMiddleware.js`.
+- **Alternatives Considered:** Rely on default jsonwebtoken behavior.
+- **Rationale:** Eliminates cryptographic algorithm confusion attacks (e.g. `none` algorithm token spoofing).
+
+### DEC-10: Dynamic Test Sandbox Schema Routing in Pool
+- **Decision:** Introduce `setActiveSchema(schemaName)` in `server/src/db/index.js` and wire test harness to execute inside `test_sandbox`.
+- **Alternatives Considered:** Running local Postgres in Docker on Windows or mocking pg pool.
+- **Rationale:** Provides 100% database test isolation without external local Docker setup dependencies, protecting live data and user tokens.
+
+### DEC-11: Jittered Backoff & Hard Text Caps on AI Calls
+- **Decision:** Add full randomized jitter (0-500ms) to exponential retry backoff, 45-second client timeouts, and hard 40,000-character payload bounding.
+- **Alternatives Considered:** Unlimited request payloads; static retry delays.
+- **Rationale:** Prevents thundering herds on rate limits and guards against denial-of-service / runaway token billing.
