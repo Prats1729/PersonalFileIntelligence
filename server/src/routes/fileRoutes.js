@@ -1,5 +1,6 @@
 import express from "express";
 import multer from "multer";
+import path from "node:path";
 import { requireAuth } from "../middleware/authMiddleware.js";
 import { uploadLimiter } from "../middleware/rateLimiter.js";
 import { uploadFileToDrive, deleteFileFromDrive, getDriveFolders, createDriveFolder, downloadFileBuffer } from "../services/driveService.js";
@@ -7,16 +8,44 @@ import { getUserById, saveFileRecord, getFilesByUser, deleteFileRecord, getFileR
 import { categorizeFilesBulk } from "../services/aiService.js";
 import { syncUserWithDrive } from "../services/syncService.js";
 import { extractDocumentText } from "../services/ocrService.js";
+import { ALLOWED_EXTENSIONS, ALLOWED_MIME_TYPES, sanitizeFilename, verifyBufferSignature } from "../utils/fileValidation.js";
+import { AppError } from "../middleware/errorHandler.js";
 
 const router = express.Router();
-// Use memory storage for multer with a 50MB per-file safety limit
+
+// Memory storage for multer with strict size limit (50MB) and cap of 25 files per request
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 50 * 1024 * 1024 }, // 50MB limit
+  limits: {
+    fileSize: 50 * 1024 * 1024, // 50MB per file
+    files: 25, // max 25 files per upload batch
+  },
+  fileFilter: (req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (!ALLOWED_EXTENSIONS.has(ext)) {
+      return cb(
+        new AppError(
+          `File type "${ext}" is not permitted. Supported formats: PDF, PNG, JPG, WEBP, DOCX, TXT.`,
+          400,
+          "UNSUPPORTED_FILE_TYPE"
+        )
+      );
+    }
+    if (!ALLOWED_MIME_TYPES.has(file.mimetype)) {
+      return cb(
+        new AppError(
+          `MIME type "${file.mimetype}" is not permitted.`,
+          400,
+          "INVALID_MIME_TYPE"
+        )
+      );
+    }
+    cb(null, true);
+  },
 });
 
 // Upload files
-router.post("/upload", requireAuth, uploadLimiter, upload.array("files"), async (req, res) => {
+router.post("/upload", requireAuth, uploadLimiter, upload.array("files"), async (req, res, next) => {
   if (!req.files || req.files.length === 0){
     return res.status(400).json({ error: "No file uploaded." });
   }
@@ -24,15 +53,25 @@ router.post("/upload", requireAuth, uploadLimiter, upload.array("files"), async 
   try {
     const userId = req.user.id;
     const { contextNote } = req.body;
-    const files = req.files;
 
-    // 1. Get user's Google refresh token
+    // 1. Sanitize filenames and verify binary magic numbers
+    for (const file of req.files) {
+      file.originalname = sanitizeFilename(file.originalname);
+      const ext = path.extname(file.originalname).toLowerCase();
+      if (!verifyBufferSignature(file.buffer, ext)) {
+        return res.status(400).json({
+          error: `File signature mismatch for "${file.originalname}". The content does not match the file extension.`,
+        });
+      }
+    }
+
+    // 2. Get user's Google refresh token
     const user = await getUserById(userId);
     if (!user || !user.google_refresh_token) {
       return res.status(401).json({ error: "User or Google Refresh Token not found." });
     }
 
-    // 2. Deduplication check: compare against existing user files
+    // 3. Deduplication check: compare against existing user files
     const userExistingFiles = await getFilesByUser(userId);
     const existingFileSet = new Set(
       userExistingFiles.map((f) => `${f.original_name}__${f.size_bytes}`)
