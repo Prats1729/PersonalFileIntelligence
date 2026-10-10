@@ -5,11 +5,12 @@ import {query} from "../db/index.js";
 /**
  * 1. Generates the Google OAuth login URL that the user visits in their browser
  */
-export function getGoogleAuthUrl() {
+export function getGoogleAuthUrl(state = "") {
   return oauth2Client.generateAuthUrl({
     access_type: "offline", // Crucial: Requests a refresh_token so our backend can access Drive later
     scope: SCOPES,
     prompt: "select_account", // Lets the user pick which Google account to use, without re-asking consent every time
+    state: state || undefined,
   });
 }
 

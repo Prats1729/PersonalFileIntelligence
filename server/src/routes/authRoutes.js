@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { Router } from "express";
 import {
   getGoogleAuthUrl,
@@ -14,10 +15,17 @@ router.use(authLimiter);
 
 /**
  * 1. Start Google Login Flow
- * Redirects the user's browser to Google's OAuth consent page
+ * Redirects the user's browser to Google's OAuth consent page with CSRF state
  */
 router.get("/google", (req, res) => {
-  const url = getGoogleAuthUrl();
+  const state = randomBytes(32).toString("hex");
+  res.cookie("oauth_state", state, {
+    httpOnly: true,
+    secure: env.isProduction,
+    sameSite: "lax",
+    maxAge: 10 * 60 * 1000, // 10 minutes
+  });
+  const url = getGoogleAuthUrl(state);
   res.redirect(url);
 });
 
@@ -44,11 +52,25 @@ if (process.env.NODE_ENV !== "production") {
 
 /**
  * 2. Google OAuth Callback
- * Google redirects back here with a one-time 'code' in the query parameters
+ * Google redirects back here with a one-time 'code' and 'state' in query params
  */
 router.get("/google/callback", async (req, res) => {
-  const { code, error } = req.query;
+  const { code, state, error } = req.query;
   const clientUrl = process.env.CLIENT_URL || "http://localhost:5173";
+  const storedState = req.cookies.oauth_state;
+
+  // Clear state cookie immediately after retrieval
+  res.clearCookie("oauth_state", {
+    httpOnly: true,
+    secure: env.isProduction,
+    sameSite: "lax",
+  });
+
+  // Verify OAuth state token to protect against Login CSRF
+  if (!state || !storedState || state !== storedState) {
+    console.warn("⚠️ OAuth state mismatch or missing CSRF token");
+    return res.redirect(`${clientUrl}?auth_error=invalid_state`);
+  }
 
   // If user clicked "Cancel" on Google's consent screen
   if (error || !code) {
