@@ -115,12 +115,22 @@ export const testApiKey = async (provider, rawKey) => {
     return { valid: false, message: "API key cannot be empty." };
   }
 
+  const sanitizeErrorMsg = (msg, defaultMsg) => {
+    if (!msg || typeof msg !== "string") return defaultMsg;
+    // Strip any potential reflection of the key or internal upstream secrets
+    const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const sanitized = msg.replace(new RegExp(escapedKey, "g"), "[REDACTED]");
+    // Keep message concise and safe
+    return sanitized.length > 200 ? sanitized.slice(0, 200) + "..." : sanitized;
+  };
+
   try {
     if (p === "openrouter") {
       const res = await fetch("https://openrouter.ai/api/v1/auth/key", {
         headers: {
           Authorization: `Bearer ${key}`,
         },
+        signal: AbortSignal.timeout(6000),
       });
       const data = await res.json().catch(() => ({}));
       if (res.ok) {
@@ -133,13 +143,16 @@ export const testApiKey = async (provider, rawKey) => {
       }
       return {
         valid: false,
-        message: data?.error?.message || "Invalid OpenRouter API key.",
+        message: sanitizeErrorMsg(data?.error?.message, "Invalid OpenRouter API key."),
       };
     }
 
     if (p === "gemini") {
       const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models?key=${key}&pageSize=1`
+        `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(key)}&pageSize=1`,
+        {
+          signal: AbortSignal.timeout(6000),
+        }
       );
       const data = await res.json().catch(() => ({}));
       if (res.ok && data.models) {
@@ -147,13 +160,16 @@ export const testApiKey = async (provider, rawKey) => {
       }
       return {
         valid: false,
-        message: data?.error?.message || "Invalid Google Gemini API key.",
+        message: sanitizeErrorMsg(data?.error?.message, "Invalid Google Gemini API key."),
       };
     }
   } catch (error) {
+    const isTimeout = error.name === "TimeoutError" || error.message?.includes("aborted");
     return {
       valid: false,
-      message: `Failed to contact provider: ${error.message}`,
+      message: isTimeout
+        ? "Provider request timed out after 6 seconds."
+        : `Failed to contact provider: ${sanitizeErrorMsg(error.message, "Network error")}`,
     };
   }
 
@@ -162,29 +178,41 @@ export const testApiKey = async (provider, rawKey) => {
 
 /**
  * Checks and records daily usage for server-key fallbacks.
- * Throws 429 AppError if the quota is exceeded.
+ * Uses atomic conditional CTE update to prevent concurrent race condition bypasses.
+ * Supports batch accounting (count parameter) for multi-file operations.
+ * Throws 429 AppError if the quota limit would be exceeded.
  */
-export const enforceDailyFreeQuota = async (userId) => {
+export const enforceDailyFreeQuota = async (userId, count = 1) => {
   const limit = env.DAILY_FREE_AI_QUOTA;
+  const increment = Math.max(1, parseInt(count, 10) || 1);
 
+  // Atomic conditional reservation:
+  // - If row doesn't exist: inserts with count $2 only if $2 <= $3
+  // - If row exists: updates ai_call_count only if (ai_call_count + $2) <= $3
   const result = await query(
     `INSERT INTO user_daily_usage (user_id, usage_date, ai_call_count, updated_at)
-     VALUES ($1, CURRENT_DATE, 1, NOW())
+     SELECT $1, CURRENT_DATE, $2::int, NOW()
+     WHERE $2::int <= $3::int
      ON CONFLICT (user_id, usage_date)
-     DO UPDATE SET ai_call_count = user_daily_usage.ai_call_count + 1, updated_at = NOW()
+     DO UPDATE SET
+       ai_call_count = user_daily_usage.ai_call_count + EXCLUDED.ai_call_count,
+       updated_at = NOW()
+     WHERE user_daily_usage.ai_call_count + EXCLUDED.ai_call_count <= $3::int
      RETURNING ai_call_count`,
-    [userId]
+    [userId, increment, limit]
   );
 
-  const currentCount = result.rows[0]?.ai_call_count || 1;
-
-  if (currentCount > limit) {
+  // If no row was inserted or updated, the quota limit would be exceeded
+  if (result.rowCount === 0) {
+    const current = await getQuotaStatus(userId);
     throw new AppError(
-      `Daily free AI limit reached (${limit}/${limit} calls). Add your own API key in Settings for unlimited use.`,
+      `Daily free AI limit reached (${current.used}/${limit} calls). Add your own API key in Settings for unlimited use.`,
       429,
       "QUOTA_EXCEEDED"
     );
   }
+
+  const currentCount = result.rows[0].ai_call_count;
 
   return {
     used: currentCount,

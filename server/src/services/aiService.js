@@ -3,15 +3,18 @@ import { env } from "../config/env.js";
 import { getActiveKeyForUser, enforceDailyFreeQuota } from "./keyService.js";
 import { AppError } from "../middleware/errorHandler.js";
 
-// Helper to get an OpenAI client for a specific key
+const MAX_TEXT_INPUT_CHARS = 40000;
+
+// Helper to get an OpenAI client for a specific key with hard timeout
 const getOpenRouterClient = (apiKey) => {
   return new OpenAI({
     baseURL: "https://openrouter.ai/api/v1",
     apiKey: apiKey,
+    timeout: 45000, // 45 seconds timeout
   });
 };
 
-// Retry wrapper with exponential backoff on 429, 502, 503
+// Retry wrapper with jittered exponential backoff on transient errors (429, 502, 503)
 async function withRetry(operation, maxRetries = 3) {
   for (let i = 0; i < maxRetries; i++) {
     try {
@@ -20,7 +23,9 @@ async function withRetry(operation, maxRetries = 3) {
       const isTransient =
         error.status === 429 || error.status === 503 || error.status === 502;
       if (isTransient && i < maxRetries - 1) {
-        const waitTime = Math.pow(2, i + 1) * 1000;
+        // Add full jitter (0 to 500ms) to prevent thundering herd
+        const jitter = Math.floor(Math.random() * 500);
+        const waitTime = Math.pow(2, i + 1) * 1000 + jitter;
         console.warn(`OpenRouter busy (Status ${error.status}). Retrying in ${waitTime}ms...`);
         await new Promise((resolve) => setTimeout(resolve, waitTime));
       } else {
@@ -34,7 +39,7 @@ async function withRetry(operation, maxRetries = 3) {
  * Resolves API key for the user, enforces daily quota for free server keys,
  * and returns initialized OpenAI client.
  */
-async function resolveAiClient(userId, { enforceQuota = true } = {}) {
+async function resolveAiClient(userId, { enforceQuota = true, callCount = 1 } = {}) {
   let key = env.OPENROUTER_API_KEY;
   let isCustom = false;
 
@@ -52,9 +57,9 @@ async function resolveAiClient(userId, { enforceQuota = true } = {}) {
     );
   }
 
-  // If using the shared server key, enforce the per-user daily quota
+  // If using the shared server key, enforce the per-user daily quota atomically
   if (!isCustom && userId && enforceQuota) {
-    await enforceDailyFreeQuota(userId);
+    await enforceDailyFreeQuota(userId, callCount);
   }
 
   return getOpenRouterClient(key);
@@ -112,7 +117,10 @@ ${filesListStr}
     }
   `;
 
-  const client = await resolveAiClient(userId, { enforceQuota: true });
+  const client = await resolveAiClient(userId, {
+    enforceQuota: true,
+    callCount: Math.max(1, files?.length || 1),
+  });
 
   return withRetry(async () => {
     const response = await client.chat.completions.create({
@@ -142,12 +150,25 @@ ${filesListStr}
 }
 
 export async function chatWithAI(messages, userId = null) {
-  const client = await resolveAiClient(userId, { enforceQuota: true });
+  const client = await resolveAiClient(userId, { enforceQuota: true, callCount: 1 });
+
+  // Bound overall text payload size to avoid token overrun / DOS
+  let currentTotal = 0;
+  const boundedMessages = messages.map((m) => {
+    const raw = typeof m.content === "string" ? m.content : "";
+    if (currentTotal + raw.length > MAX_TEXT_INPUT_CHARS) {
+      const allowed = Math.max(0, MAX_TEXT_INPUT_CHARS - currentTotal);
+      currentTotal += allowed;
+      return { ...m, content: raw.slice(0, allowed) };
+    }
+    currentTotal += raw.length;
+    return m;
+  });
 
   return withRetry(async () => {
     const response = await client.chat.completions.create({
       model: "openrouter/auto",
-      messages: messages,
+      messages: boundedMessages,
     });
     return response.choices[0].message.content;
   });

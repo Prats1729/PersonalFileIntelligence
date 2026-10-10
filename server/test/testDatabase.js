@@ -1,4 +1,4 @@
-import { pool, query } from "../src/db/index.js";
+import { pool, query, setActiveSchema } from "../src/db/index.js";
 import { runMigrations } from "../src/db/migrate.js";
 import { generateAppToken } from "../src/services/authService.js";
 import { randomUUID } from "node:crypto";
@@ -12,12 +12,14 @@ export const TEST_SCHEMA = "test_sandbox";
 export async function setupTestDatabase() {
   await query(`CREATE SCHEMA IF NOT EXISTS ${TEST_SCHEMA};`);
   await runMigrations(TEST_SCHEMA);
+  setActiveSchema(TEST_SCHEMA);
 }
 
 /**
  * Cleans up all test data within the isolated test schema.
  */
 export async function teardownTestDatabase() {
+  setActiveSchema(null);
   await query(`DROP SCHEMA IF EXISTS ${TEST_SCHEMA} CASCADE;`);
 }
 

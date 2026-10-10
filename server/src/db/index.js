@@ -11,12 +11,23 @@ const { Pool } = pg;
 const isCloudDb =
   env.DATABASE_URL && env.DATABASE_URL.includes("sslmode=require");
 
+let activeSchema = null;
+
+/**
+ * Sets the active schema for query isolation (e.g. during test runs).
+ */
+export function setActiveSchema(schemaName) {
+  activeSchema = schemaName;
+}
+
 export const pool = new Pool({
   connectionString: env.DATABASE_URL,
   ssl: env.isProduction || isCloudDb ? { rejectUnauthorized: false } : false,
   connectionTimeoutMillis: 10000,
   idleTimeoutMillis: 30000,
   max: 10,
+  allowExitOnIdle: true,
+  statement_timeout: 30000,
 });
 
 pool.on("error", (err) => {
@@ -24,11 +35,25 @@ pool.on("error", (err) => {
 });
 
 /**
- * Query helper with auto-retry specifically tuned for Neon serverless resume.
+ * Query helper with auto-retry specifically tuned for Neon serverless resume
+ * and schema isolation support.
  */
 export const query = async (text, params) => {
-  try {
+  const execute = async () => {
+    if (activeSchema) {
+      const client = await pool.connect();
+      try {
+        await client.query(`SET search_path TO ${activeSchema}, public;`);
+        return await client.query(text, params);
+      } finally {
+        client.release();
+      }
+    }
     return await pool.query(text, params);
+  };
+
+  try {
+    return await execute();
   } catch (err) {
     const isConnectionError =
       err.code === "ECONNRESET" ||
@@ -43,7 +68,7 @@ export const query = async (text, params) => {
         "Database connection dropped or Neon asleep. Retrying query..."
       );
       await new Promise((r) => setTimeout(r, 1000));
-      return await pool.query(text, params);
+      return await execute();
     }
     throw err;
   }
