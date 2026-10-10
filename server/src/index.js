@@ -26,6 +26,11 @@ app.use(cookieParser());
 
 import { query } from "./db/index.js";
 
+// Ensure database schema has is_favorite column
+query("ALTER TABLE files ADD COLUMN IF NOT EXISTS is_favorite BOOLEAN DEFAULT FALSE").catch((e) =>
+  console.warn("Schema check warning (is_favorite):", e.message)
+);
+
 // 3. Health Check Route
 app.get("/api/health", async (req, res) => {
   try {

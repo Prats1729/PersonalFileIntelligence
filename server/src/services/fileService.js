@@ -7,11 +7,19 @@ export async function getUserById(userId) {
 }
 
 // Save the uploaded file metadata to the database
-export async function saveFileRecord(userId, driveMetadata, file, contextNote, folderName = null) {
+export async function saveFileRecord(
+  userId,
+  driveMetadata,
+  file,
+  contextNote,
+  folderName = null,
+  extractedText = null,
+  status = "ready"
+) {
   const insertSql = `
-    INSERT INTO files (user_id, drive_file_id, original_name, mime_type, size_bytes, context_note, ai_result_folder)
-    VALUES ($1, $2, $3, $4, $5, $6, $7)
-    RETURNING id, drive_file_id, original_name, mime_type, size_bytes, context_note, ai_result_folder, created_at;
+    INSERT INTO files (user_id, drive_file_id, original_name, mime_type, size_bytes, context_note, ai_result_folder, extracted_text, status)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+    RETURNING id, drive_file_id, original_name, mime_type, size_bytes, context_note, ai_result_folder, extracted_text, status, created_at;
   `;
   const result = await query(insertSql, [
     userId,
@@ -20,7 +28,9 @@ export async function saveFileRecord(userId, driveMetadata, file, contextNote, f
     file.mimetype,
     file.size,
     contextNote || null,
-    folderName
+    folderName,
+    extractedText || null,
+    status || "ready",
   ]);
   return result.rows[0];
 }
@@ -77,3 +87,15 @@ export async function updateFileExtractedText(fileId, text, status = "ready") {
   const result = await query(updateSql, [text, status, fileId]);
   return result.rows[0];
 }
+
+export async function toggleFileFavorite(userId, fileId) {
+  const updateSql = `
+    UPDATE files 
+    SET is_favorite = NOT COALESCE(is_favorite, false), updated_at = CURRENT_TIMESTAMP 
+    WHERE id = $1 AND user_id = $2 
+    RETURNING *;
+  `;
+  const result = await query(updateSql, [fileId, userId]);
+  return result.rows[0];
+}
+
