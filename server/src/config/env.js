@@ -48,14 +48,19 @@ function loadAndValidateEnv() {
     process.env.TRUST_PROXY === "1" ||
     NODE_ENV === "production";
 
+  const DEFAULT_DEV_KEY = "dev_default_master_encryption_key_32chars!";
   const ENCRYPTION_MASTER_KEY =
     process.env.ENCRYPTION_MASTER_KEY ||
     (NODE_ENV === "production"
       ? ""
-      : "dev_default_master_encryption_key_32chars!");
+      : DEFAULT_DEV_KEY);
 
-  if (NODE_ENV === "production" && (!ENCRYPTION_MASTER_KEY || ENCRYPTION_MASTER_KEY.length < 32)) {
-    errors.push("ENCRYPTION_MASTER_KEY must be at least 32 characters in production for AES-256-GCM.");
+  if (NODE_ENV === "production") {
+    if (!ENCRYPTION_MASTER_KEY || ENCRYPTION_MASTER_KEY.length < 32) {
+      errors.push("ENCRYPTION_MASTER_KEY must be at least 32 characters in production for AES-256-GCM.");
+    } else if (ENCRYPTION_MASTER_KEY === DEFAULT_DEV_KEY || ENCRYPTION_MASTER_KEY.includes("dev_default")) {
+      errors.push("ENCRYPTION_MASTER_KEY cannot use default development key in production.");
+    }
   }
 
   const DAILY_FREE_AI_QUOTA = parseInt(process.env.DAILY_FREE_AI_QUOTA || "30", 10);

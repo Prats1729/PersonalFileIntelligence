@@ -27,13 +27,13 @@ export const getActiveKeyForUser = async (userId, provider) => {
   const p = validateProvider(provider);
 
   const result = await query(
-    "SELECT encrypted_key, iv, tag FROM user_api_keys WHERE user_id = $1 AND provider = $2",
+    "SELECT encrypted_key, iv, tag, key_version FROM user_api_keys WHERE user_id = $1 AND provider = $2",
     [userId, p]
   );
 
   if (result.rows.length > 0) {
-    const { encrypted_key, iv, tag } = result.rows[0];
-    const decrypted = decryptApiKey(encrypted_key, iv, tag);
+    const { encrypted_key, iv, tag, key_version } = result.rows[0];
+    const decrypted = decryptApiKey(encrypted_key, iv, tag, key_version || 1);
     return {
       key: decrypted,
       isCustom: true,
@@ -61,20 +61,21 @@ export const saveUserKey = async (userId, provider, rawKey) => {
     throw new AppError("API key must be at least 8 characters long.", 400, "INVALID_KEY_FORMAT");
   }
 
-  const { encryptedKey, iv, tag } = encryptApiKey(trimmed);
+  const { encryptedKey, iv, tag, keyVersion } = encryptApiKey(trimmed);
   const maskedKey = maskApiKey(trimmed);
 
   const result = await query(
-    `INSERT INTO user_api_keys (user_id, provider, encrypted_key, iv, tag, masked_key, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, NOW())
+    `INSERT INTO user_api_keys (user_id, provider, encrypted_key, iv, tag, masked_key, key_version, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
      ON CONFLICT (user_id, provider)
      DO UPDATE SET encrypted_key = EXCLUDED.encrypted_key,
                    iv = EXCLUDED.iv,
                    tag = EXCLUDED.tag,
                    masked_key = EXCLUDED.masked_key,
+                   key_version = EXCLUDED.key_version,
                    updated_at = NOW()
      RETURNING provider, masked_key, updated_at`,
-    [userId, p, encryptedKey, iv, tag, maskedKey]
+    [userId, p, encryptedKey, iv, tag, maskedKey, keyVersion]
   );
 
   return result.rows[0];
