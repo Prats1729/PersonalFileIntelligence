@@ -108,7 +108,7 @@ router.post("/upload", requireAuth, uploadLimiter, upload.array("files"), async 
     const extractedTexts = await Promise.all(
       filesToProcess.map(async (file) => {
         try {
-          return await extractDocumentText(file.buffer, file.mimetype, file.originalname);
+          return await extractDocumentText(file.buffer, file.mimetype, file.originalname, userId);
         } catch (e) {
           console.warn(`Pre-extraction failed for "${file.originalname}":`, e.message);
           return "";
@@ -128,10 +128,11 @@ router.post("/upload", requireAuth, uploadLimiter, upload.array("files"), async 
       aiResults = await categorizeFilesBulk(
         filesMetadata,
         contextNote,
-        existingFolders
+        existingFolders,
+        userId
       );
     } catch (aiErr) {
-      console.error("Bulk categorization failed, falling back to default:", aiErr);
+      console.error("Bulk categorization failed, falling back to default:", aiErr.message || aiErr);
     }
 
     // Map AI results by index or fileName for fast lookup
@@ -270,7 +271,7 @@ router.post("/upload", requireAuth, uploadLimiter, upload.array("files"), async 
         const saved = savedFiles.find((s) => s.original_name === file.originalname);
         if (!saved || saved.extracted_text) continue;
         try {
-          const text = await extractDocumentText(file.buffer, file.mimetype, file.originalname);
+          const text = await extractDocumentText(file.buffer, file.mimetype, file.originalname, userId);
           if (text) {
             await updateFileExtractedText(saved.id, text, "ready");
             console.log(`[Background OCR Complete] Extracted ${text.length} chars for "${file.originalname}"`);
@@ -422,7 +423,7 @@ router.post("/:id/ocr", requireAuth, async (req, res) => {
 
     // Download buffer from Google Drive & extract via ocrService
     const buffer = await downloadFileBuffer(user.google_refresh_token, fileRecord.drive_file_id);
-    let text = await extractDocumentText(buffer, fileRecord.mime_type, fileRecord.original_name);
+    let text = await extractDocumentText(buffer, fileRecord.mime_type, fileRecord.original_name, userId);
 
     if (!text || text.trim().length === 0) {
       text = "No readable text detected in this document.";

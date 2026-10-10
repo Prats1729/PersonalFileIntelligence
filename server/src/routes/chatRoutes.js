@@ -104,7 +104,7 @@ router.post("/:chatId", requireAuth, async (req, res) => {
     // --- STEP 2.5: BACKGROUND TITLE GENERATION ---
     if (!isRegenerate && history.length === 1 && message) {
       // Fire-and-forget! We don't await this so it doesn't slow down the response
-      generateChatTitle(message).then(async (title) => {
+      generateChatTitle(message, userId).then(async (title) => {
         console.log(`Auto-generated title: ${title}`);
         await updateChatTitle(chatId, title);
       }).catch(err => console.error("Failed to generate title", err));
@@ -148,7 +148,7 @@ router.post("/:chatId", requireAuth, async (req, res) => {
                 user.google_refresh_token,
                 fileRecord.drive_file_id,
               );
-              text = await extractDocumentText(buffer, fileRecord.mime_type, fileRecord.original_name);
+              text = await extractDocumentText(buffer, fileRecord.mime_type, fileRecord.original_name, userId);
             }
 
             // Limit text per file to 25k characters to prevent token overflow
@@ -188,8 +188,8 @@ SPECIAL INSTRUCTIONS:
       }`,
     });
 
-    // STEP 4: Send the history to the LLM
-    const aiResponseText = await chatWithAI(formattedHistory);
+    // STEP 4: Send the history to the LLM (with user BYOK or daily server quota)
+    const aiResponseText = await chatWithAI(formattedHistory, userId);
 
     // STEP 5: Save the AI's response to the DB
     const savedAiMessage = await saveMessage(chatId, "ai", aiResponseText);
@@ -201,7 +201,16 @@ SPECIAL INSTRUCTIONS:
     });
   } catch (error) {
     console.error("Chat Error:", error);
-    return res.status(500).json({ error: "AI failed to respond" });
+    if (error.statusCode === 429 || error.errorCode === "QUOTA_EXCEEDED") {
+      return res.status(429).json({
+        error: error.message,
+        code: "QUOTA_EXCEEDED",
+      });
+    }
+    return res.status(error.statusCode || 500).json({
+      error: error.message || "AI failed to respond",
+      code: error.errorCode || "AI_ERROR",
+    });
   }
 });
 

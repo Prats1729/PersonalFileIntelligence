@@ -1,4 +1,5 @@
 import { PDFParse } from "pdf-parse";
+import { getActiveKeyForUser } from "./keyService.js";
 
 const MAX_TEXT_CHARS = 50000; // Cap to ~25 pages of dense text
 
@@ -23,8 +24,14 @@ async function extractFromDigitalPdf(buffer) {
 /**
  * Tier 2A: OpenRouter Vision OCR (Fast, robust gpt-4o-mini endpoint)
  */
-async function extractWithOpenRouterVision(buffer, mimeType) {
-  const apiKey = process.env.OPENROUTER_API_KEY;
+async function extractWithOpenRouterVision(buffer, mimeType, userId = null) {
+  let apiKey = process.env.OPENROUTER_API_KEY;
+  if (userId) {
+    try {
+      const active = await getActiveKeyForUser(userId, "openrouter");
+      if (active.key) apiKey = active.key;
+    } catch (_) {}
+  }
   if (!apiKey) return "";
 
   try {
@@ -88,8 +95,14 @@ function isBoilerplateScannerText(text) {
 /**
  * Tier 2B: Google Gemini Vision OCR (with model fallback for high-demand spikes)
  */
-async function extractWithGeminiVision(buffer, mimeType) {
-  const apiKey = process.env.GEMINI_API_KEY;
+async function extractWithGeminiVision(buffer, mimeType, userId = null) {
+  let apiKey = process.env.GEMINI_API_KEY;
+  if (userId) {
+    try {
+      const active = await getActiveKeyForUser(userId, "gemini");
+      if (active.key) apiKey = active.key;
+    } catch (_) {}
+  }
   if (!apiKey) {
     console.warn("⚠️ No GEMINI_API_KEY configured for Vision OCR.");
     return "";
@@ -153,6 +166,7 @@ export async function extractDocumentText(
   buffer,
   mimeType = "",
   fileName = "",
+  userId = null,
 ) {
   if (!buffer || buffer.length === 0) return "";
 
@@ -186,16 +200,16 @@ export async function extractDocumentText(
     console.log(
       `📄 Document "${fileName}" contains no substantial digital text layer. Invoking Vision OCR...`,
     );
-    const visionText = await extractWithGeminiVision(buffer, "application/pdf");
+    const visionText = await extractWithGeminiVision(buffer, "application/pdf", userId);
     return (visionText || text || "").slice(0, MAX_TEXT_CHARS);
   }
 
   // Case 3: Images (PNG, JPG, WebP)
   if (mime.includes("image") || name.match(/\.(png|jpg|jpeg|webp)$/)) {
     // Try OpenRouter gpt-4o-mini vision first
-    let visionText = await extractWithOpenRouterVision(buffer, mime || "image/jpeg");
+    let visionText = await extractWithOpenRouterVision(buffer, mime || "image/jpeg", userId);
     if (!visionText) {
-      visionText = await extractWithGeminiVision(buffer, mime || "image/jpeg");
+      visionText = await extractWithGeminiVision(buffer, mime || "image/jpeg", userId);
     }
     return (visionText || "").slice(0, MAX_TEXT_CHARS);
   }
