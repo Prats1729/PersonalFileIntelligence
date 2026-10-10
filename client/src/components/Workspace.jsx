@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { Toaster, toast } from "react-hot-toast";
 import Chat from "./Chat";
+import SettingsModal from "./SettingsModal";
 import { API_BASE } from "../config";
 import {
   Search,
@@ -78,7 +79,8 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
   const [isEditingNote, setIsEditingNote] = useState(false);
   const [editingNoteText, setEditingNoteText] = useState("");
 
-  // Shortcuts Modal
+  // Settings & Shortcuts Modal
+  const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
   const [showShortcutsModal, setShowShortcutsModal] = useState(false);
 
   // Chat History
@@ -205,12 +207,20 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
           }
         }
       }
+      // Cmd+, or Ctrl+, opens Settings
+      if ((e.metaKey || e.ctrlKey) && e.key === ",") {
+        e.preventDefault();
+        setIsSettingsModalOpen(true);
+        return;
+      }
       // Escape clears selections or closes modals
       if (e.key === "Escape") {
         if (isUploadModalOpen) {
           setIsUploadModalOpen(false);
           setUploadFiles([]);
           setUploadNote("");
+        } else if (isSettingsModalOpen) {
+          setIsSettingsModalOpen(false);
         } else if (showShortcutsModal) {
           setShowShortcutsModal(false);
         } else if (currentFolder) {
@@ -223,7 +233,7 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isUploadModalOpen, showShortcutsModal, currentFolder, selectedIds, files]);
+  }, [isUploadModalOpen, isSettingsModalOpen, showShortcutsModal, currentFolder, selectedIds, files]);
 
   // 3. Popstate handling
   useEffect(() => {
@@ -1128,7 +1138,7 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
           {/* Bottom Settings Button */}
           <div className="mt-auto p-2 border-t border-[#232732]">
             <button
-              onClick={() => setShowShortcutsModal(true)}
+              onClick={() => setIsSettingsModalOpen(true)}
               className="w-full flex items-center justify-between px-2.5 py-1.5 rounded text-xs text-[#94a3b8] hover:bg-[#181b22] hover:text-white transition-colors"
             >
               <div className="flex items-center gap-2">
@@ -1958,6 +1968,7 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
                     setActiveChatId(null);
                   }}
                   onClose={() => setIsInspectorOpen(false)}
+                  onOpenSettings={() => setIsSettingsModalOpen(true)}
                   onUpdateFileNote={async (fileId, newNote) => {
                     try {
                       const res = await fetch(`${API_BASE}/api/files/${fileId}/note`, {
@@ -2106,7 +2117,13 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
         </div>
       )}
 
-      {/* Keyboard Shortcuts Modal */}
+      {/* Settings & AI Keys Modal */}
+      <SettingsModal
+        isOpen={isSettingsModalOpen}
+        onClose={() => setIsSettingsModalOpen(false)}
+      />
+
+      {/* Keyboard Shortcuts Modal (Legacy Fallback) */}
       {showShortcutsModal && (
         <div className="absolute inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4 animate-fadeIn">
           <div className="bg-[#12141a] rounded-xl w-[420px] border border-[#232732] shadow-2xl overflow-hidden">
@@ -2119,6 +2136,7 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
             <div className="p-4 flex flex-col gap-2.5 text-xs">
               {[
                 { key: "⌘K or /", desc: "Focus file search" },
+                { key: "⌘,", desc: "Open Settings & AI Keys" },
                 { key: "Space", desc: "Quick preview / open in Google Drive" },
                 { key: "I", desc: "Toggle right Inspector pane" },
                 { key: "Ctrl + Click", desc: "Multi-select documents or folders" },
