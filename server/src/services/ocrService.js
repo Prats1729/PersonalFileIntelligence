@@ -2,21 +2,31 @@ import { PDFParse } from "pdf-parse";
 import { getActiveKeyForUser } from "./keyService.js";
 
 const MAX_TEXT_CHARS = 50000; // Cap to ~25 pages of dense text
+const PDF_PARSE_TIMEOUT_MS = 10000; // 10-second timeout ceiling to mitigate pathological PDF parser stalls
 
 /**
- * Tier 1: Local digital PDF text extraction (< 30ms)
+ * Tier 1: Local digital PDF text extraction (< 30ms) with timeout & length bounds
  */
 async function extractFromDigitalPdf(buffer) {
   try {
-    const parser = new PDFParse({ data: buffer });
-    const result = await parser.getText();
-    await parser.destroy();
-    return (result?.text || "").trim();
-  } catch (err) {
-    console.warn(
-      "⚠️ Tier 1 (pdf-parse) failed:",
-      err.message,
+    const parsePromise = (async () => {
+      const parser = new PDFParse({ data: buffer });
+      const result = await parser.getText();
+      await parser.destroy();
+      return (result?.text || "").trim();
+    })();
+
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(
+        () => reject(new Error("PDF text extraction timed out after 10s")),
+        PDF_PARSE_TIMEOUT_MS
+      )
     );
+
+    const text = await Promise.race([parsePromise, timeoutPromise]);
+    return text.slice(0, MAX_TEXT_CHARS);
+  } catch (err) {
+    console.warn("⚠️ Tier 1 (pdf-parse) failed:", err.message);
     return "";
   }
 }
