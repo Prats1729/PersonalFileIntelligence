@@ -273,7 +273,7 @@ router.post("/upload", requireAuth, uploadLimiter, upload.array("files"), async 
         try {
           const text = await extractDocumentText(file.buffer, file.mimetype, file.originalname, userId);
           if (text) {
-            await updateFileExtractedText(saved.id, text, "ready");
+            await updateFileExtractedText(saved.id, userId, text, "ready");
             console.log(`[Background OCR Complete] Extracted ${text.length} chars for "${file.originalname}"`);
           }
         } catch (ocrErr) {
@@ -429,7 +429,7 @@ router.post("/:id/ocr", requireAuth, async (req, res) => {
       text = "No readable text detected in this document.";
     }
 
-    const updated = await updateFileExtractedText(fileRecord.id, text, "ready");
+    const updated = await updateFileExtractedText(fileRecord.id, userId, text, "ready");
     return res.status(200).json({
       success: true,
       file: updated,

@@ -77,14 +77,14 @@ export async function updateFileContextNote(userId, fileId, contextNote) {
   return result.rows[0];
 }
 
-export async function updateFileExtractedText(fileId, text, status = "ready") {
+export async function updateFileExtractedText(fileId, userId, text, status = "ready") {
   const updateSql = `
     UPDATE files 
     SET extracted_text = $1, status = $2, updated_at = CURRENT_TIMESTAMP 
-    WHERE id = $3 
+    WHERE id = $3 AND user_id = $4 
     RETURNING *;
   `;
-  const result = await query(updateSql, [text, status, fileId]);
+  const result = await query(updateSql, [text, status, fileId, userId]);
   return result.rows[0];
 }
 

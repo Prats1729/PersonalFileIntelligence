@@ -106,7 +106,7 @@ router.post("/:chatId", requireAuth, async (req, res) => {
       // Fire-and-forget! We don't await this so it doesn't slow down the response
       generateChatTitle(message, userId).then(async (title) => {
         console.log(`Auto-generated title: ${title}`);
-        await updateChatTitle(chatId, title);
+        await updateChatTitle(chatId, userId, title);
       }).catch(err => console.error("Failed to generate title", err));
     }
 

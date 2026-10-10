@@ -24,10 +24,10 @@ export async function createChat(userId, title = "New Chat"){
     return result.rows[0];
 }
 
-export async function updateChatTitle(chatId, title){
+export async function updateChatTitle(chatId, userId, title){
     const result = await query(
-        "UPDATE chats SET title = $1 WHERE id = $2 RETURNING *", 
-        [title, chatId]
+        "UPDATE chats SET title = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 AND user_id = $3 RETURNING *", 
+        [title, chatId, userId]
     );
     return result.rows[0];
 }
