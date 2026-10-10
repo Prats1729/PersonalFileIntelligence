@@ -5,11 +5,6 @@ import { logger } from "../utils/logger.js";
 
 // Ensure IPv4 lookup precedence on Windows / container runtimes
 dns.setDefaultResultOrder("ipv4first");
-try {
-  dns.setServers(["8.8.8.8", "1.1.1.1"]);
-} catch (e) {
-  // Ignored if custom DNS servers not permitted in sandbox
-}
 
 const { Pool } = pg;
 

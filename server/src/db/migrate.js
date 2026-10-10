@@ -11,12 +11,16 @@ const MIGRATIONS_DIR = path.join(__dirname, "migrations");
 /**
  * Executes all pending SQL migration files in deterministic sequence.
  */
-export async function runMigrations() {
-  logger.info("Checking database migrations...");
+export async function runMigrations(targetSchema = "public") {
+  logger.info({ schema: targetSchema }, "Checking database migrations...");
 
-  // Ensure tracking table exists
+  if (targetSchema !== "public") {
+    await query(`CREATE SCHEMA IF NOT EXISTS ${targetSchema};`);
+  }
+
+  // Ensure tracking table exists in target schema
   await query(`
-    CREATE TABLE IF NOT EXISTS schema_migrations (
+    CREATE TABLE IF NOT EXISTS ${targetSchema}.schema_migrations (
       id SERIAL PRIMARY KEY,
       name VARCHAR(255) UNIQUE NOT NULL,
       applied_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -24,7 +28,7 @@ export async function runMigrations() {
   `);
 
   const { rows: appliedRows } = await query(
-    "SELECT name FROM schema_migrations ORDER BY id ASC;"
+    `SELECT name FROM ${targetSchema}.schema_migrations ORDER BY id ASC;`
   );
   const appliedSet = new Set(appliedRows.map((r) => r.name));
 
@@ -47,9 +51,10 @@ export async function runMigrations() {
     const client = await pool.connect();
     try {
       await client.query("BEGIN;");
+      await client.query(`SET LOCAL search_path TO ${targetSchema};`);
       await client.query(sql);
       await client.query(
-        "INSERT INTO schema_migrations (name) VALUES ($1);",
+        `INSERT INTO ${targetSchema}.schema_migrations (name) VALUES ($1);`,
         [file]
       );
       await client.query("COMMIT;");
