@@ -37,21 +37,24 @@ export async function categorizeFilesBulk(
   const folderNames = existingFolders.map((f) => f.name).join(", ");
 
   const filesListStr = files
-    .map(
-      (f) => `File Index ${f.index}: Name: "${f.name}", MimeType: "${f.mimeType}"`
-    )
+    .map((f) => {
+      const preview = f.contentSnippet
+        ? ` | Content Preview: "${f.contentSnippet.replace(/\s+/g, ' ').slice(0, 400)}"`
+        : "";
+      return `File Index ${f.index}: Name: "${f.name}", MimeType: "${f.mimeType}"${preview}`;
+    })
     .join("\n");
 
   const systemPrompt = `
-    You are an AI file organizer.
-    You will receive a list of files (each with an index, name, and mime type) and an optional user note.
-    Your job is to decide which folder each file belongs to.
+    You are an academic document and file organizer.
+    You will receive a list of files (with index, name, mime type, and document text content preview) and an optional user context note.
+    Your job is to decide which academic folder/category each file belongs to based on its document content, topics, and filename.
     Existing folders: ${folderNames || "None"}
 
     Rules:
-    - For each file, choose an existing folder if it fits best, or suggest a new folder name if none of the existing ones fit.
-    - If a file doesn't fit any folder, set both chosenExistingFolder and suggestedNewFolder to null.
-    - Do NOT suggest a folder name that is similar to an existing folder.
+    - If the user provides a Context Note (e.g. "AIES", "Maths", "PYQs"), treat it as high-priority ground truth.
+    - If a file has an obscure name (e.g. "SKM_...", "Scan_...", "IMG_...", random numbers) or little readable text, ALWAYS assign it according to the Context Note (e.g. if Context Note is "AIES", choose an existing folder matching "AIES" or suggest a new folder named after the Context Note). DO NOT default to null or "Others" when a context note is provided.
+    - For each file, choose an existing folder if it fits best, or suggest a concise new folder name (e.g. "Computer Networks", "PYQs", "Operating Systems", "Mathematics") if none fit.
     - If multiple files in this batch belong to the same new category, suggest the exact same suggestedNewFolder name for all of them.
   `;
 

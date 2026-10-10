@@ -14,7 +14,7 @@ import {
 import { chatWithAI, generateChatTitle } from "../services/aiService.js";
 import { getUserById, getFileRecord } from "../services/fileService.js";
 import { downloadFileBuffer } from "../services/driveService.js";
-import { extractTextFromBuffer } from "../services/extractionService.js";
+import { extractDocumentText } from "../services/ocrService.js";
 
 const router = Router();
 
@@ -148,7 +148,7 @@ router.post("/:chatId", requireAuth, async (req, res) => {
                 user.google_refresh_token,
                 fileRecord.drive_file_id,
               );
-              text = await extractTextFromBuffer(buffer, fileRecord.mime_type);
+              text = await extractDocumentText(buffer, fileRecord.mime_type, fileRecord.original_name);
             }
 
             // Limit text per file to 25k characters to prevent token overflow
