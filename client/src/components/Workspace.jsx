@@ -40,7 +40,8 @@ import {
   RefreshCw,
   Edit3,
   Zap,
-  Sparkles
+  Sparkles,
+  AlertCircle
 } from "lucide-react";
 
 export default function Workspace({ user, onLogout, isLoggingOut }) {
@@ -48,6 +49,7 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
   const [searchQuery, setSearchQuery] = useState("");
   const [activeScope, setActiveScope] = useState("All"); // All, PDFs, Notes, Images, Docs
   const [currentFolder, setCurrentFolder] = useState(null);
+  const [isFavoritesOnly, setIsFavoritesOnly] = useState(false);
   const [activeTag, setActiveTag] = useState(null);
   const [sortBy, setSortBy] = useState("date"); // date, name, size
 
@@ -58,7 +60,6 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
 
   // Collapsible Sidebar Sections
   const [isCollectionsOpen, setIsCollectionsOpen] = useState(true);
-  const [isTagsOpen, setIsTagsOpen] = useState(true);
   const [isChatsOpen, setIsChatsOpen] = useState(true);
 
   // Upload Modal State
@@ -66,8 +67,14 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
   const [uploadNote, setUploadNote] = useState("");
   const [uploadFiles, setUploadFiles] = useState([]);
   const [isUploading, setIsUploading] = useState(false);
+  const [processingCount, setProcessingCount] = useState(0);
   const [isDragOver, setIsDragOver] = useState(false);
   const [dismissProcessingBanner, setDismissProcessingBanner] = useState(false);
+
+  // Persistent Upload Manager Queue (Google Drive style widget)
+  const [uploadQueue, setUploadQueue] = useState([]);
+  const [isUploadWidgetOpen, setIsUploadWidgetOpen] = useState(true);
+  const [showUploadWidget, setShowUploadWidget] = useState(false);
 
   // Data & Selection
   const [files, setFiles] = useState([]);
@@ -256,13 +263,14 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
 
   // 4. Filtering and Sorting
   const filteredFiles = files.filter((file) => {
-    // Search query
+    // Search query: checks filename, context notes, folder, and full extracted document text!
     const q = searchQuery.toLowerCase();
     const matchesSearch =
       !q ||
       file.original_name.toLowerCase().includes(q) ||
       (file.context_note && file.context_note.toLowerCase().includes(q)) ||
-      (file.ai_result_folder && file.ai_result_folder.toLowerCase().includes(q));
+      (file.ai_result_folder && file.ai_result_folder.toLowerCase().includes(q)) ||
+      (file.extracted_text && file.extracted_text.toLowerCase().includes(q));
 
     // Scope filter (All, PDFs, Notes, Images, Docs)
     let matchesScope = true;
@@ -289,7 +297,10 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
         file.ai_result_folder?.toLowerCase().includes(activeTag.toLowerCase())
       : true;
 
-    return matchesSearch && matchesScope && matchesFolder && matchesTag;
+    // Favorites filter
+    const matchesFavorite = isFavoritesOnly ? Boolean(file.is_favorite) : true;
+
+    return matchesSearch && matchesScope && matchesFolder && matchesTag && matchesFavorite;
   });
 
   // Sort files
@@ -364,20 +375,50 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
     return { label: "FILE", style: "bg-purple-500/15 text-purple-400 border-purple-500/30" };
   };
 
+  // Active uploading items in queue
+  const activeProcessingCount = uploadQueue.filter((i) => i.status === "uploading").length;
+
   // 5. Upload Handler
-  const handleUpload = async () => {
-    if (uploadFiles.length === 0) {
+  const handleUpload = async (filesOverride = null) => {
+    const rawFiles = filesOverride || uploadFiles;
+    if (!rawFiles || rawFiles.length === 0) {
       toast.error("Please select a file to upload.");
       return;
     }
+
+    const filesToUpload = Array.from(rawFiles);
+    const noteToUpload = uploadNote;
+    const count = filesToUpload.length;
+
+    // Immediately close modal & reset input so user is not blocked
+    setIsUploadModalOpen(false);
+    setUploadFiles([]);
+    setUploadNote("");
     setIsUploading(true);
+    setProcessingCount((prev) => prev + count);
     setDismissProcessingBanner(false);
+
+    // Build unique queue items
+    const newItems = filesToUpload.map((f, i) => ({
+      id: `${f.name}-${f.size}-${Date.now()}-${i}`,
+      file: f,
+      name: f.name,
+      size: f.size,
+      status: "uploading", // 'uploading' | 'done' | 'skipped' | 'failed'
+      error: null,
+      contextNote: noteToUpload,
+    }));
+
+    setUploadQueue((prev) => [...newItems, ...prev]);
+    setShowUploadWidget(true);
+    setIsUploadWidgetOpen(true);
+
     const formData = new FormData();
-    uploadFiles.forEach((file) => {
+    filesToUpload.forEach((file) => {
       formData.append("files", file);
     });
-    if (uploadNote) {
-      formData.append("contextNote", uploadNote);
+    if (noteToUpload) {
+      formData.append("contextNote", noteToUpload);
     }
 
     try {
@@ -386,36 +427,147 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
         credentials: "include",
         body: formData,
       });
+      const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        const serverError =
-          errData.error ||
-          errData.message ||
-          `Upload failed (Status ${res.status}: ${res.statusText || "Server error"})`;
+        const serverError = data.error || data.message || `Upload failed (${res.status})`;
         throw new Error(serverError);
       }
-      const data = await res.json();
+
+      const uploadedNames = new Set((data.files || []).map((f) => f.original_name));
+      const skippedMap = new Map((data.skippedFiles || []).map((s) => [s.fileName, s.reason]));
+      const failedMap = new Map((data.failedFiles || []).map((f) => [f.fileName, f.error]));
+
+      setUploadQueue((prev) =>
+        prev.map((item) => {
+          if (!newItems.some((n) => n.id === item.id)) return item;
+          if (uploadedNames.has(item.name)) {
+            return { ...item, status: "done" };
+          }
+          if (skippedMap.has(item.name)) {
+            return { ...item, status: "skipped", error: skippedMap.get(item.name) };
+          }
+          if (failedMap.has(item.name)) {
+            return { ...item, status: "failed", error: failedMap.get(item.name) };
+          }
+          return { ...item, status: "done" };
+        })
+      );
+
       if (data.files && data.files.length > 0) {
         setFiles((prev) => [...data.files, ...prev]);
       }
-      if (data.failedFiles && data.failedFiles.length > 0) {
-        toast.error(`${data.failedFiles.length} file(s) failed to upload.`);
-      } else {
-        toast.success("Files uploaded successfully!");
-      }
 
-      setIsUploading(false);
-      setUploadFiles([]);
-      setUploadNote("");
-      setIsUploadModalOpen(false);
+      const countUploaded = data.files?.length || 0;
+      const countSkipped = data.skippedFiles?.length || 0;
+      const countFailed = data.failedFiles?.length || 0;
+
+      if (countSkipped > 0 && countUploaded > 0) {
+        toast.success(`${countUploaded} uploaded, ${countSkipped} existing skipped`);
+      } else if (countSkipped > 0 && countUploaded === 0) {
+        toast(`All ${countSkipped} file(s) already in library (skipped duplicates)`);
+      } else if (countUploaded > 0) {
+        toast.success(`${countUploaded} file(s) uploaded and categorized!`);
+      }
+      if (countFailed > 0) {
+        toast.error(`${countFailed} file(s) failed. Retry available in Upload Manager.`);
+      }
     } catch (error) {
       console.error("Upload Error:", error);
-      setIsUploading(false);
+      setUploadQueue((prev) =>
+        prev.map((item) => {
+          if (!newItems.some((n) => n.id === item.id)) return item;
+          return { ...item, status: "failed", error: error.message || "Upload failed" };
+        })
+      );
       toast.error(error.message || "Failed to upload. Please try again!");
+    } finally {
+      setIsUploading(false);
+      setProcessingCount(0);
     }
   };
 
-  // 6. Delete Handlers
+  // Retry individual failed file from Upload Manager widget
+  const handleRetryUploadItem = async (queueItem) => {
+    if (!queueItem.file) {
+      toast.error("File reference no longer available. Please re-select the file.");
+      return;
+    }
+
+    setUploadQueue((prev) =>
+      prev.map((item) =>
+        item.id === queueItem.id ? { ...item, status: "uploading", error: null } : item
+      )
+    );
+
+    const formData = new FormData();
+    formData.append("files", queueItem.file);
+    if (queueItem.contextNote) {
+      formData.append("contextNote", queueItem.contextNote);
+    }
+
+    try {
+      const res = await fetch(`${API_BASE}/api/files/upload`, {
+        method: "POST",
+        credentials: "include",
+        body: formData,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Retry failed");
+
+      if (data.files && data.files.length > 0) {
+        setFiles((prev) => [...data.files, ...prev]);
+        setUploadQueue((prev) =>
+          prev.map((item) => (item.id === queueItem.id ? { ...item, status: "done" } : item))
+        );
+        toast.success(`"${queueItem.name}" uploaded successfully!`);
+      } else if (data.skippedFiles && data.skippedFiles.length > 0) {
+        setUploadQueue((prev) =>
+          prev.map((item) => (item.id === queueItem.id ? { ...item, status: "skipped" } : item))
+        );
+        toast(`"${queueItem.name}" already in library`);
+      } else {
+        throw new Error(data.failedFiles?.[0]?.error || "Upload failed");
+      }
+    } catch (err) {
+      setUploadQueue((prev) =>
+        prev.map((item) =>
+          item.id === queueItem.id ? { ...item, status: "failed", error: err.message } : item
+        )
+      );
+      toast.error(`Retry failed: ${err.message}`);
+    }
+  };
+
+  // 6. Favorite Toggle Handler (Optimistic UI update)
+  const handleToggleFavorite = async (fileId, e = null) => {
+    if (e) e.stopPropagation();
+    // Optimistic local state update
+    setFiles((prev) =>
+      prev.map((f) => (f.id === fileId ? { ...f, is_favorite: !f.is_favorite } : f))
+    );
+
+    try {
+      const res = await fetch(`${API_BASE}/api/files/${fileId}/favorite`, {
+        method: "PATCH",
+        credentials: "include",
+      });
+      if (!res.ok) throw new Error("Failed to update favorite status");
+      const data = await res.json();
+      if (data.file) {
+        setFiles((prev) => prev.map((f) => (f.id === fileId ? data.file : f)));
+      }
+      toast.success(data.message || "Updated favorites");
+    } catch (err) {
+      console.error("Favorite toggle error:", err);
+      // Rollback on network failure
+      setFiles((prev) =>
+        prev.map((f) => (f.id === fileId ? { ...f, is_favorite: !f.is_favorite } : f))
+      );
+      toast.error("Could not update favorite");
+    }
+  };
+
+  // 7. Delete Handlers
   const handleFileDelete = async (fileId) => {
     setIsDeleting(true);
     try {
@@ -755,10 +907,11 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
               onClick={() => {
                 setCurrentFolder(null);
                 setActiveTag(null);
+                setIsFavoritesOnly(false);
                 setActiveScope("All");
               }}
               className={`flex items-center justify-between px-4 py-1.5 text-xs font-medium transition-colors ${
-                !currentFolder && !activeTag
+                !currentFolder && !activeTag && !isFavoritesOnly
                   ? "bg-[#181b22] text-[#38bdf8] border-l-2 border-[#38bdf8]"
                   : "text-[#94a3b8] hover:bg-[#181b22] hover:text-white"
               }`}
@@ -821,77 +974,113 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
               )}
             </div>
 
-            {/* Tags Section */}
-            <div className="pt-2">
-              <button
-                onClick={() => setIsTagsOpen((prev) => !prev)}
-                className="w-full flex items-center justify-between px-4 py-1 text-xs text-[#94a3b8] hover:text-white"
+            {/* Processing Status Tab */}
+            <div
+              onClick={() => {
+                if (uploadQueue.length > 0) {
+                  setShowUploadWidget(true);
+                  setIsUploadWidgetOpen(true);
+                }
+              }}
+              className="group relative flex items-center justify-between px-4 py-1.5 text-xs text-[#94a3b8] hover:bg-[#181b22] hover:text-white cursor-pointer transition-colors"
+            >
+              <div className="flex items-center gap-2.5">
+                <RefreshCw
+                  className={`w-3.5 h-3.5 text-[#f59e0b] ${
+                    activeProcessingCount > 0 ? "animate-spin" : ""
+                  }`}
+                />
+                <span>Processing Status</span>
+              </div>
+              <span
+                className={`font-mono text-[10px] px-1.5 py-0.2 rounded-full border transition-colors ${
+                  activeProcessingCount > 0
+                    ? "bg-[#f59e0b]/20 text-[#f59e0b] border-[#f59e0b]/30 animate-pulse"
+                    : uploadQueue.length > 0
+                    ? "bg-[#38bdf8]/15 text-[#38bdf8] border-[#38bdf8]/30"
+                    : "bg-[#232732] text-[#64748b] border-[#2b3040]"
+                }`}
               >
-                <div className="flex items-center gap-2">
-                  <Tag className="w-3.5 h-3.5 text-[#64748b]" />
-                  <span className="font-semibold text-[11px] uppercase tracking-wider font-mono">Tags</span>
-                  <span className="text-[9px] bg-[#232732] text-amber-400/90 px-1.5 py-0.2 rounded border border-[#2b3040]">Coming Soon</span>
-                </div>
-                {isTagsOpen ? (
-                  <ChevronDown className="w-3 h-3 text-[#64748b]" />
-                ) : (
-                  <ChevronRight className="w-3 h-3 text-[#64748b]" />
-                )}
-              </button>
+                {activeProcessingCount > 0 ? activeProcessingCount : uploadQueue.length}
+              </span>
 
-              {isTagsOpen && (
-                <div className="pl-6 pr-2 flex flex-col gap-0.5 py-1">
-                  {["#exam", "#syllabus", "#notes", "#reference", "#lab"].map((tag) => (
-                    <button
-                      key={tag}
-                      onClick={() => setActiveTag(activeTag === tag ? null : tag)}
-                      className={`flex items-center gap-1.5 py-1 px-2 rounded text-xs transition-colors text-left ${
-                        activeTag === tag
-                          ? "bg-[#38bdf8]/10 text-[#38bdf8] font-medium"
-                          : "text-[#94a3b8] hover:bg-[#181b22] hover:text-white"
-                      }`}
-                    >
-                      <span className="text-[#64748b] font-mono text-[11px]">#</span>
-                      <span className="truncate">{tag.replace("#", "")}</span>
-                    </button>
-                  ))}
+              {/* Hover Popover showing live queue */}
+              {uploadQueue.length > 0 && (
+                <div className="hidden group-hover:block absolute left-full top-0 ml-2 w-64 p-3 bg-[#12141a] border border-[#2b3040] rounded-xl shadow-2xl z-50 pointer-events-none animate-fadeIn">
+                  <div className="text-[11px] font-semibold text-white mb-2 flex items-center justify-between border-b border-[#232732] pb-1.5">
+                    <span>Processing Pipeline</span>
+                    <span className="font-mono text-[10px] text-[#38bdf8]">
+                      {activeProcessingCount > 0
+                        ? `${activeProcessingCount} in flight`
+                        : `${uploadQueue.length} total`}
+                    </span>
+                  </div>
+                  <div className="space-y-1.5 max-h-44 overflow-hidden">
+                    {uploadQueue.slice(0, 6).map((q) => (
+                      <div
+                        key={q.id}
+                        className="flex items-center justify-between text-[10px] text-[#94a3b8]"
+                      >
+                        <span className="truncate max-w-[140px] text-gray-200">
+                          {q.name}
+                        </span>
+                        <span
+                          className={`capitalize font-mono ${
+                            q.status === "done"
+                              ? "text-emerald-400"
+                              : q.status === "skipped"
+                              ? "text-amber-400"
+                              : q.status === "failed"
+                              ? "text-red-400"
+                              : "text-[#38bdf8]"
+                          }`}
+                        >
+                          {q.status}
+                        </span>
+                      </div>
+                    ))}
+                    {uploadQueue.length > 6 && (
+                      <p className="text-[9px] text-[#64748b] pt-1">
+                        +{uploadQueue.length - 6} more files
+                      </p>
+                    )}
+                  </div>
                 </div>
               )}
             </div>
-
-            {/* Processing Status Tab */}
-            <div className="flex items-center justify-between px-4 py-1.5 text-xs text-[#94a3b8] hover:bg-[#181b22] cursor-pointer">
-              <div className="flex items-center gap-2.5">
-                <RefreshCw className={`w-3.5 h-3.5 text-[#f59e0b] ${isUploading ? "animate-spin" : ""}`} />
-                <span>Processing Status</span>
-              </div>
-              <span className="font-mono text-[10px] px-1.5 py-0.2 rounded-full bg-[#f59e0b]/20 text-[#f59e0b] border border-[#f59e0b]/30">
-                {isUploading ? "1" : "0"}
-              </span>
-            </div>
           </nav>
 
-          {/* Auxiliary Navigation: Favorites, Trash, Chat History */}
+          {/* Auxiliary Navigation: Favorites */}
           <div className="py-2 flex flex-col gap-0.5 border-b border-[#232732]">
             <button
-              onClick={() => toast("Favorites feature coming soon!")}
-              className="flex items-center justify-between px-4 py-1.5 text-xs text-[#94a3b8] hover:bg-[#181b22] hover:text-white transition-colors"
+              onClick={() => {
+                setIsFavoritesOnly((prev) => !prev);
+                setCurrentFolder(null);
+                setActiveTag(null);
+              }}
+              className={`flex items-center justify-between px-4 py-1.5 text-xs transition-colors ${
+                isFavoritesOnly
+                  ? "bg-amber-400/10 text-amber-300 font-medium border-l-2 border-amber-400"
+                  : "text-[#94a3b8] hover:bg-[#181b22] hover:text-white"
+              }`}
             >
               <div className="flex items-center gap-2.5">
-                <Star className="w-3.5 h-3.5" />
+                <Star
+                  className={`w-3.5 h-3.5 ${
+                    isFavoritesOnly ? "text-amber-400 fill-amber-400" : "text-amber-400/80"
+                  }`}
+                />
                 <span>Favorites</span>
               </div>
-              <span className="text-[9px] bg-[#232732] text-amber-400/80 px-1.5 py-0.5 rounded border border-[#2b3040]">Coming Soon</span>
-            </button>
-            <button
-              onClick={() => toast("Trash bin feature coming soon!")}
-              className="flex items-center justify-between px-4 py-1.5 text-xs text-[#94a3b8] hover:bg-[#181b22] hover:text-white transition-colors"
-            >
-              <div className="flex items-center gap-2.5">
-                <Trash className="w-3.5 h-3.5" />
-                <span>Trash</span>
-              </div>
-              <span className="text-[9px] bg-[#232732] text-amber-400/80 px-1.5 py-0.5 rounded border border-[#2b3040]">Coming Soon</span>
+              <span
+                className={`font-mono text-[10px] px-1.5 py-0.2 rounded-full border transition-colors ${
+                  files.filter((f) => f.is_favorite).length > 0
+                    ? "bg-amber-400/20 text-amber-300 border-amber-400/30"
+                    : "bg-[#232732] text-[#64748b] border-[#2b3040]"
+                }`}
+              >
+                {files.filter((f) => f.is_favorite).length}
+              </span>
             </button>
           </div>
 
@@ -965,19 +1154,21 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
         {/* ====================================================== */}
         <main className="flex-1 flex flex-col min-w-[380px] bg-[#0d0e11] overflow-hidden">
           {/* Active Processing Banner (as seen in Stitch screen) */}
-          {(isUploading || (!dismissProcessingBanner && uploadFiles.length > 0)) && (
-            <div className="mx-4 mt-3 p-2.5 bg-[#12141a] border border-[#38bdf8]/30 rounded flex items-center justify-between shadow-sm">
+          {(isUploading || (!dismissProcessingBanner && processingCount > 0)) && (
+            <div className="mx-4 mt-3 p-2.5 bg-[#12141a] border border-[#38bdf8]/30 rounded flex items-center justify-between shadow-sm animate-fadeIn">
               <div className="flex items-center gap-3">
                 <div className="w-6 h-6 rounded bg-[#38bdf8]/10 border border-[#38bdf8]/30 flex items-center justify-center text-[#38bdf8]">
                   <RefreshCw className="w-3.5 h-3.5 animate-spin" />
                 </div>
                 <div className="flex items-center gap-2 text-xs">
-                  <span className="font-medium text-white">1 file processing:</span>
+                  <span className="font-medium text-white">
+                    {processingCount > 1 ? `${processingCount} files processing:` : "Processing:"}
+                  </span>
                   <span className="font-mono text-[#38bdf8]">
-                    {uploadFiles[0]?.name || "Uploading..."}
+                    {processingCount > 1 ? `${processingCount} items` : "Uploading & indexing"}
                   </span>
                   <span className="text-[#64748b]">•</span>
-                  <span className="text-[#94a3b8]">Uploading & syncing with Google Drive...</span>
+                  <span className="text-[#94a3b8]">Categorizing & syncing with Google Drive in background...</span>
                 </div>
               </div>
               <div className="flex items-center gap-3">
@@ -999,17 +1190,29 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
           <div className="px-6 pt-4 pb-2.5 flex flex-col gap-3">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2.5">
-                {currentFolder && (
+                {(currentFolder || isFavoritesOnly) && (
                   <button
-                    onClick={() => setCurrentFolder(null)}
+                    onClick={() => {
+                      setCurrentFolder(null);
+                      setIsFavoritesOnly(false);
+                    }}
                     className="p-1 hover:bg-[#181b22] rounded text-[#64748b] hover:text-white transition-colors"
                     title="Back to All Files"
                   >
                     <ArrowLeft className="w-4 h-4" />
                   </button>
                 )}
-                <h1 className="text-base font-bold text-white tracking-tight">
-                  {currentFolder ? currentFolder : "All Documents"}
+                <h1 className="text-base font-bold text-white tracking-tight flex items-center gap-2">
+                  {isFavoritesOnly ? (
+                    <>
+                      <Star className="w-4 h-4 text-amber-400 fill-amber-400" />
+                      <span>Favorites</span>
+                    </>
+                  ) : currentFolder ? (
+                    currentFolder
+                  ) : (
+                    "All Documents"
+                  )}
                 </h1>
                 <span className="text-xs font-mono text-[#64748b]">
                   ({sortedFiles.length} {sortedFiles.length === 1 ? "file" : "files"})
@@ -1211,7 +1414,18 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
                           />
                         </td>
                         <td className="pr-2 truncate">
-                          <div className="flex items-center gap-2 truncate">
+                          <div className="flex items-center gap-1.5 truncate">
+                            <button
+                              onClick={(e) => handleToggleFavorite(file.id, e)}
+                              className={`p-0.5 rounded transition-colors shrink-0 ${
+                                file.is_favorite
+                                  ? "text-amber-400"
+                                  : "text-[#475569] hover:text-amber-400 opacity-0 group-hover:opacity-100"
+                              }`}
+                              title={file.is_favorite ? "Remove from Favorites" : "Add to Favorites"}
+                            >
+                              <Star className={`w-3.5 h-3.5 ${file.is_favorite ? "fill-amber-400 text-amber-400" : ""}`} />
+                            </button>
                             <span
                               className={`text-[9px] font-mono font-semibold px-1 py-0.2 rounded border ${badge.style}`}
                             >
@@ -1242,10 +1456,17 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
                           )}
                         </td>
                         <td className="pr-2">
-                          <span className="inline-flex items-center gap-1.5 text-[11px] text-[#14b8a6] bg-[#14b8a6]/10 border border-[#14b8a6]/30 px-1.5 py-0.5 rounded font-mono">
-                            <span className="w-1.5 h-1.5 rounded-full bg-[#14b8a6]"></span>
-                            Ready
-                          </span>
+                          {file.status === "processing" ? (
+                            <span className="inline-flex items-center gap-1.5 text-[11px] text-[#38bdf8] bg-[#38bdf8]/10 border border-[#38bdf8]/30 px-1.5 py-0.5 rounded font-mono">
+                              <span className="w-1.5 h-1.5 rounded-full bg-[#38bdf8] animate-ping"></span>
+                              Processing
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1.5 text-[11px] text-[#14b8a6] bg-[#14b8a6]/10 border border-[#14b8a6]/30 px-1.5 py-0.5 rounded font-mono">
+                              <span className="w-1.5 h-1.5 rounded-full bg-[#14b8a6]"></span>
+                              Ready
+                            </span>
+                          )}
                         </td>
                         <td className="pr-2 text-[#64748b] font-mono text-xs">
                           {formatDate(file.created_at)}
@@ -1337,6 +1558,15 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
                             {formatBytes(file.size_bytes)} • {formatDate(file.created_at)}
                           </p>
                         </div>
+                        <button
+                          onClick={(e) => handleToggleFavorite(file.id, e)}
+                          className={`p-1 rounded transition-colors ${
+                            file.is_favorite ? "text-amber-400" : "text-[#475569] hover:text-amber-400"
+                          }`}
+                          title={file.is_favorite ? "Remove from Favorites" : "Add to Favorites"}
+                        >
+                          <Star className={`w-3.5 h-3.5 ${file.is_favorite ? "fill-amber-400 text-amber-400" : ""}`} />
+                        </button>
                       </div>
 
                       {/* Context Note Box */}
@@ -1456,9 +1686,22 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
                         </span>
                       </div>
                       <div className="flex-1 min-w-0">
-                        <h2 className="text-xs font-semibold text-white truncate leading-tight" title={selectedFile.original_name}>
-                          {selectedFile.original_name}
-                        </h2>
+                        <div className="flex items-start justify-between gap-1">
+                          <h2 className="text-xs font-semibold text-white truncate leading-tight" title={selectedFile.original_name}>
+                            {selectedFile.original_name}
+                          </h2>
+                          <button
+                            onClick={() => handleToggleFavorite(selectedFile.id)}
+                            className={`p-1 rounded transition-colors shrink-0 ${
+                              selectedFile.is_favorite
+                                ? "text-amber-400"
+                                : "text-[#64748b] hover:text-amber-400"
+                            }`}
+                            title={selectedFile.is_favorite ? "Remove from Favorites" : "Add to Favorites"}
+                          >
+                            <Star className={`w-3.5 h-3.5 ${selectedFile.is_favorite ? "fill-amber-400 text-amber-400" : ""}`} />
+                          </button>
+                        </div>
                         <div className="mt-1 flex items-center gap-1.5">
                           <span className="text-[10px] font-mono px-1.5 py-0.2 bg-[#14b8a6]/10 border border-[#14b8a6]/30 text-[#14b8a6] rounded">
                             Indexed &amp; Searchable
@@ -1608,9 +1851,9 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
                           </span>
                         </div>
                         <div className="p-2 bg-[#181b22] rounded border border-[#232732]">
-                          <span className="text-[#64748b] text-[10px] block mb-0.5 font-mono">Embedding Model</span>
-                          <span className="font-mono text-[11px] text-[#94a3b8] block truncate">
-                            text-embed-3 <span className="text-[9px] text-amber-400/80">(Coming Soon)</span>
+                          <span className="text-[#64748b] text-[10px] block mb-0.5 font-mono">Indexing Engine</span>
+                          <span className="font-mono text-[11px] text-[#38bdf8] block truncate">
+                            Tiered OCR & Search
                           </span>
                         </div>
                       </div>
@@ -1622,10 +1865,13 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
                         <label className="text-[11px] font-mono font-semibold uppercase tracking-wider text-[#64748b]">
                           Associated Tags
                         </label>
-                        <span className="text-[9px] bg-[#232732] text-amber-400/90 px-1.5 py-0.2 rounded border border-[#2b3040]">Coming Soon</span>
                       </div>
                       <div className="flex flex-wrap gap-1.5">
-                        {["#exam", "#syllabus", "#notes"].map((tag) => (
+                        {[
+                          `#${selectedFile.ai_result_folder?.toLowerCase() || "academic"}`,
+                          "#exam-prep",
+                          "#syllabus"
+                        ].map((tag) => (
                           <span
                             key={tag}
                             className="px-2 py-0.5 rounded bg-[#181b22] border border-[#232732] text-[11px] font-mono text-[#94a3b8]"
@@ -1856,18 +2102,12 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
                   Cancel
                 </button>
                 <button
-                  onClick={handleUpload}
-                  disabled={isUploading || uploadFiles.length === 0}
+                  onClick={() => handleUpload()}
+                  disabled={uploadFiles.length === 0}
                   className="px-4 py-1.5 bg-[#38bdf8] hover:bg-[#7bd0ff] text-[#00354a] font-semibold text-xs rounded transition-colors disabled:opacity-50 flex items-center gap-1.5"
                 >
-                  {isUploading ? (
-                    <>
-                      <div className="w-3 h-3 border-2 border-[#00354a] border-t-transparent rounded-full animate-spin"></div>
-                      <span>Categorizing...</span>
-                    </>
-                  ) : (
-                    <span>Confirm Upload</span>
-                  )}
+                  <Upload className="w-3.5 h-3.5" />
+                  <span>{uploadFiles.length > 0 ? `Upload ${uploadFiles.length} file(s)` : "Upload"}</span>
                 </button>
               </div>
             </div>
@@ -1903,6 +2143,112 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
               ))}
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Floating Google Drive Style Upload Manager Widget (Bottom-Right) */}
+      {showUploadWidget && uploadQueue.length > 0 && (
+        <div className="fixed bottom-5 right-6 z-50 w-88 bg-[#12141a]/95 backdrop-blur-md border border-[#2b3040] rounded-xl shadow-2xl overflow-hidden animate-slideUp">
+          {/* Header Bar */}
+          <div className="px-3.5 py-2.5 bg-[#181b22] border-b border-[#232732] flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              {activeProcessingCount > 0 ? (
+                <RefreshCw className="w-3.5 h-3.5 text-[#38bdf8] animate-spin" />
+              ) : (
+                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+              )}
+              <span className="text-xs font-medium text-white">
+                {activeProcessingCount > 0
+                  ? `Uploading ${uploadQueue.length} item(s)...`
+                  : `Uploads complete (${uploadQueue.length})`}
+              </span>
+            </div>
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => setIsUploadWidgetOpen((prev) => !prev)}
+                className="p-1 hover:bg-[#232732] rounded text-[#64748b] hover:text-white transition-colors"
+                title={isUploadWidgetOpen ? "Minimize" : "Expand"}
+              >
+                {isUploadWidgetOpen ? (
+                  <ChevronDown className="w-3.5 h-3.5" />
+                ) : (
+                  <ChevronRight className="w-3.5 h-3.5" />
+                )}
+              </button>
+              <button
+                onClick={() => setShowUploadWidget(false)}
+                className="p-1 hover:bg-[#232732] rounded text-[#64748b] hover:text-white transition-colors"
+                title="Dismiss"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
+
+          {/* Collapsible Item List */}
+          {isUploadWidgetOpen && (
+            <div className="max-h-64 overflow-y-auto divide-y divide-[#1e222d] text-xs">
+              {uploadQueue.map((item) => (
+                <div
+                  key={item.id}
+                  className="p-2.5 flex items-center justify-between hover:bg-[#181b22]/50 transition-colors"
+                >
+                  <div className="flex items-center gap-2.5 min-w-0 flex-1 pr-2">
+                    {item.status === "uploading" && (
+                      <RefreshCw className="w-3.5 h-3.5 text-[#38bdf8] animate-spin shrink-0" />
+                    )}
+                    {item.status === "done" && (
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                    )}
+                    {item.status === "skipped" && (
+                      <Info className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                    )}
+                    {item.status === "failed" && (
+                      <AlertCircle className="w-3.5 h-3.5 text-red-400 shrink-0" />
+                    )}
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-white font-medium text-[11px]">
+                        {item.name}
+                      </p>
+                      <p className="text-[10px] text-[#64748b]">
+                        {formatBytes(item.size)} •{" "}
+                        <span
+                          className={
+                            item.status === "done"
+                              ? "text-emerald-400"
+                              : item.status === "skipped"
+                              ? "text-amber-400 font-medium"
+                              : item.status === "failed"
+                              ? "text-red-400 font-medium"
+                              : "text-[#38bdf8]"
+                          }
+                        >
+                          {item.status === "uploading"
+                            ? "Uploading & categorizing..."
+                            : item.status === "done"
+                            ? "Complete"
+                            : item.status === "skipped"
+                            ? "Skipped (Duplicate)"
+                            : "Failed"}
+                        </span>
+                      </p>
+                    </div>
+                  </div>
+
+                  {item.status === "failed" && (
+                    <button
+                      onClick={() => handleRetryUploadItem(item)}
+                      className="px-2 py-0.5 bg-red-500/20 hover:bg-red-500/30 text-red-300 border border-red-500/40 rounded text-[10px] flex items-center gap-1 transition-colors shrink-0"
+                      title="Retry upload"
+                    >
+                      <RefreshCw className="w-2.5 h-2.5" />
+                      Retry
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>
