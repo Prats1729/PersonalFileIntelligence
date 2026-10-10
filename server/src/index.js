@@ -9,6 +9,7 @@ import { startSyncJob, stopSyncJob } from "./services/syncService.js";
 import authRoutes from "./routes/authRoutes.js";
 import fileRoutes from "./routes/fileRoutes.js";
 import chatRoutes from "./routes/chatRoutes.js";
+import settingsRoutes from "./routes/settingsRoutes.js";
 import { errorHandler, notFoundHandler, AppError } from "./middleware/errorHandler.js";
 
 const app = express();
@@ -85,6 +86,7 @@ app.get("/api/health", async (req, res) => {
 app.use("/api/auth", authRoutes);
 app.use("/api/files", fileRoutes);
 app.use("/api/chat", chatRoutes);
+app.use("/api/settings", settingsRoutes);
 
 // 9. 404 & Centralized Error Handlers
 app.use(notFoundHandler);
