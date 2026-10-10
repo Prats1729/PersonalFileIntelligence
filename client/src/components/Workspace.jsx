@@ -3,30 +3,20 @@ import { Toaster, toast } from "react-hot-toast";
 import Chat from "./Chat";
 import { API_BASE } from "../config";
 import {
-  HardDrive,
   Search,
   LogOut,
   Upload,
   FileText,
-  Image as ImageIcon,
   Folder,
-  Tag,
-  Clock,
-  ExternalLink,
   Plus,
   CheckCircle2,
-  FileCode,
-  Trash,
   ArrowLeft,
   MessageSquare,
   MoreHorizontal,
   SlidersHorizontal,
   Grid,
   List,
-  Check,
   Copy,
-  Share2,
-  Cloud,
   Star,
   Settings,
   ChevronRight,
@@ -34,14 +24,15 @@ import {
   Pin,
   Info,
   X,
-  FileDown,
-  Menu,
   Keyboard,
   RefreshCw,
   Edit3,
-  Zap,
   Sparkles,
-  AlertCircle
+  AlertCircle,
+  Menu,
+  Trash,
+  ExternalLink,
+  Share2
 } from "lucide-react";
 
 export default function Workspace({ user, onLogout, isLoggingOut }) {
