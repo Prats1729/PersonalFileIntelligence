@@ -43,7 +43,25 @@ function loadAndValidateEnv() {
   }
 
   const LOG_LEVEL = process.env.LOG_LEVEL || (NODE_ENV === "production" ? "info" : "debug");
-  const TRUST_PROXY = process.env.TRUST_PROXY === "true" || process.env.TRUST_PROXY === "1";
+  const TRUST_PROXY =
+    process.env.TRUST_PROXY === "true" ||
+    process.env.TRUST_PROXY === "1" ||
+    NODE_ENV === "production";
+
+  const ENCRYPTION_MASTER_KEY =
+    process.env.ENCRYPTION_MASTER_KEY ||
+    (NODE_ENV === "production"
+      ? ""
+      : "dev_default_master_encryption_key_32chars!");
+
+  if (NODE_ENV === "production" && (!ENCRYPTION_MASTER_KEY || ENCRYPTION_MASTER_KEY.length < 32)) {
+    errors.push("ENCRYPTION_MASTER_KEY must be at least 32 characters in production for AES-256-GCM.");
+  }
+
+  const DAILY_FREE_AI_QUOTA = parseInt(process.env.DAILY_FREE_AI_QUOTA || "30", 10);
+  if (isNaN(DAILY_FREE_AI_QUOTA) || DAILY_FREE_AI_QUOTA < 0) {
+    errors.push("DAILY_FREE_AI_QUOTA must be a non-negative integer.");
+  }
 
   if (errors.length > 0) {
     const errorReport = [
@@ -69,6 +87,8 @@ function loadAndValidateEnv() {
     GOOGLE_CLIENT_SECRET,
     GOOGLE_REDIRECT_URI,
     SESSION_SECRET,
+    ENCRYPTION_MASTER_KEY,
+    DAILY_FREE_AI_QUOTA,
     OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY || "",
     GEMINI_API_KEY: process.env.GEMINI_API_KEY || "",
     LOG_LEVEL,
