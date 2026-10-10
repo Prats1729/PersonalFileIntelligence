@@ -34,6 +34,20 @@ const COMMAND_CHIPS = [
   { prefix: "/flashcards", label: "Flashcards", icon: Zap, desc: "Generate 4 flashcard study pairs" },
 ];
 
+/**
+ * Pure helper to parse <thinking>...</thinking> tags from message content.
+ */
+function parseMessageContent(text = "") {
+  const thinkingMatch = text.match(/<thinking>([\s\S]*?)<\/thinking>/i);
+  let thinking = null;
+  let body = text;
+  if (thinkingMatch) {
+    thinking = thinkingMatch[1].trim();
+    body = text.replace(/<thinking>[\s\S]*?<\/thinking>/i, "").trim();
+  }
+  return { thinking, body };
+}
+
 export default function Chat({
   user,
   selectedFile,
@@ -174,17 +188,6 @@ export default function Chat({
     }
   }, [activeChatId]);
 
-  // Helper to parse <thinking>...</thinking> tags from message
-  const parseMessageContent = (text = "") => {
-    const thinkingMatch = text.match(/<thinking>([\s\S]*?)<\/thinking>/i);
-    let thinking = null;
-    let body = text;
-    if (thinkingMatch) {
-      thinking = thinkingMatch[1].trim();
-      body = text.replace(/<thinking>[\s\S]*?<\/thinking>/i, "").trim();
-    }
-    return { thinking, body };
-  };
 
 
   // Handle Send
