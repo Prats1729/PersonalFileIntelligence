@@ -58,3 +58,6 @@ jobs:
 
       - name: Build production bundle
         run: npm run build
+
+      - name: Dependency audit check
+        run: npm audit --audit-level=critical || true

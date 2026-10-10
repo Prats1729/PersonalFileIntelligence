@@ -71,9 +71,22 @@ docker compose up --build
 | `GOOGLE_CLIENT_ID` | Google OAuth2 Client ID | `your-id.apps.googleusercontent.com` |
 | `GOOGLE_CLIENT_SECRET`| Google OAuth2 Client Secret | `GOCSPX-...` |
 | `GOOGLE_REDIRECT_URI` | Google OAuth2 Redirect URI | `http://localhost:5000/api/auth/google/callback` |
-| `GEMINI_API_KEY` | Google Gemini API key (optional fallback) | `AIzaSy...` |
-| `OPENROUTER_API_KEY` | OpenRouter API key (optional) | `sk-or-v1-...` |
+| `ENCRYPTION_MASTER_KEY` | Master key for AES-256-GCM encryption at rest (min 32 chars) | `32-char-random-key-in-prod` |
+| `DAILY_FREE_AI_QUOTA` | Max free AI calls/day when using server key | `30` |
+| `GEMINI_API_KEY` | Google Gemini API key (optional server fallback) | `AIzaSy...` |
+| `OPENROUTER_API_KEY` | OpenRouter API key (optional server fallback) | `sk-or-v1-...` |
 | `LOG_LEVEL` | Pino logging level (`trace`, `debug`, `info`, `warn`, `error`) | `info` |
+| `TRUST_PROXY` | Trust reverse proxy (true behind Nginx / Render) | `true` |
+
+---
+
+## 🔑 Bring Your Own Key (BYOK) & Quota Policy
+
+Personal File Intelligence supports self-hosted and user-provided AI models:
+- **AES-256-GCM Encryption at Rest**: User keys (OpenRouter, Gemini) are encrypted with a random 96-bit IV and 128-bit authentication tag before being stored in the `user_api_keys` database table. Plaintext keys are never stored, logged, or sent back to the browser (only masked previews like `sk-or-••••••••7890` are returned).
+- **Graceful Fallback & Daily Quota**: If a user has not supplied their own key, the server falls back to the server environment keys (`OPENROUTER_API_KEY` / `GEMINI_API_KEY`). Server fallback usage is strictly capped at `DAILY_FREE_AI_QUOTA` (default: 30 calls/day) per user to prevent quota exhaustion.
+- **Unlimited Usage for BYOK**: Users who configure their own API keys bypass the daily quota entirely and make unlimited AI and OCR calls.
+- **Key Connection Testing**: Users can test their keys live against upstream AI endpoints (`POST /api/settings/keys/test`) before committing them to encrypted storage.
 
 ---
 
