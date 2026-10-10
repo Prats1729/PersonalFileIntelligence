@@ -1,36 +1,36 @@
 import pg from "pg";
-import dotenv from "dotenv";
 import dns from "node:dns";
+import { env } from "../config/env.js";
+import { logger } from "../utils/logger.js";
 
-// Ensure IPv4 lookup precedence and fallback DNS servers on Windows
+// Ensure IPv4 lookup precedence on Windows / container runtimes
 dns.setDefaultResultOrder("ipv4first");
 try {
   dns.setServers(["8.8.8.8", "1.1.1.1"]);
-} catch (e) {}
-
-dotenv.config();
+} catch (e) {
+  // Ignored if custom DNS servers not permitted in sandbox
+}
 
 const { Pool } = pg;
 
-const isProduction = process.env.NODE_ENV === "production";
 const isCloudDb =
-  process.env.DATABASE_URL &&
-  process.env.DATABASE_URL.includes("sslmode=require");
+  env.DATABASE_URL && env.DATABASE_URL.includes("sslmode=require");
 
 export const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: isProduction || isCloudDb ? { rejectUnauthorized: false } : false,
+  connectionString: env.DATABASE_URL,
+  ssl: env.isProduction || isCloudDb ? { rejectUnauthorized: false } : false,
   connectionTimeoutMillis: 10000,
   idleTimeoutMillis: 30000,
   max: 10,
 });
 
-// Prevent unhandled errors on idle clients from crashing process
 pool.on("error", (err) => {
-  console.error("⚠️ Unexpected error on idle database client:", err.message);
+  logger.error({ err }, "Unexpected error on idle database pool client");
 });
 
-// Helper query function with auto-retry for serverless Neon DB wakeups
+/**
+ * Query helper with auto-retry specifically tuned for Neon serverless resume.
+ */
 export const query = async (text, params) => {
   try {
     return await pool.query(text, params);
@@ -43,7 +43,10 @@ export const query = async (text, params) => {
       err.message?.includes("closed");
 
     if (isConnectionError) {
-      console.warn("⚠️ Database connection suspended or dropped. Retrying query...", err.message);
+      logger.warn(
+        { err: err.message },
+        "Database connection dropped or Neon asleep. Retrying query..."
+      );
       await new Promise((r) => setTimeout(r, 1000));
       return await pool.query(text, params);
     }
@@ -51,3 +54,19 @@ export const query = async (text, params) => {
   }
 };
 
+/**
+ * Probes the database to confirm health and active connectivity.
+ */
+export async function checkDbHealth() {
+  const result = await pool.query("SELECT 1 AS healthy");
+  return result.rows[0]?.healthy === 1;
+}
+
+/**
+ * Closes the connection pool gracefully on server shutdown.
+ */
+export async function closePool() {
+  logger.info("Closing database connection pool...");
+  await pool.end();
+  logger.info("Database connection pool closed.");
+}
