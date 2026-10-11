@@ -1,14 +1,14 @@
-import rateLimit from "express-rate-limit";
+import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 
 /**
  * Generates an isolated rate-limiting key using authenticated user ID when available,
- * falling back to IP address.
+ * falling back to normalized IP address for IPv6 subnet protection.
  */
 const getUserOrIpKey = (req) => {
   if (req.user?.id) {
     return `user:${req.user.id}`;
   }
-  return req.ip || req.headers["x-forwarded-for"] || req.socket.remoteAddress || "unknown_client";
+  return ipKeyGenerator(req.ip || "127.0.0.1");
 };
 
 const createLimiter = (options) => {
