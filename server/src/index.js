@@ -6,6 +6,7 @@ import { env } from "./config/env.js";
 import { logger, httpLogger } from "./utils/logger.js";
 import { checkDbHealth, closePool, query } from "./db/index.js";
 import { startSyncJob, stopSyncJob } from "./services/syncService.js";
+import { startSummarySweepJob, stopSummarySweepJob } from "./services/summaryService.js";
 import authRoutes from "./routes/authRoutes.js";
 import fileRoutes from "./routes/fileRoutes.js";
 import chatRoutes from "./routes/chatRoutes.js";
@@ -92,8 +93,9 @@ app.use("/api/settings", settingsRoutes);
 app.use(notFoundHandler);
 app.use(errorHandler);
 
-// 10. Start Background Jobs
+// 10. Start Background Jobs & Startup Sweeps
 startSyncJob();
+startSummarySweepJob();
 
 // 11. Start HTTP Server
 const server = app.listen(env.PORT, () => {
@@ -113,6 +115,7 @@ function gracefulShutdown(signal) {
 
   // Stop accepting new requests & stop scheduled background cron
   stopSyncJob();
+  stopSummarySweepJob();
 
   server.close(async () => {
     logger.info("HTTP server closed. Draining database connection pool...");

@@ -39,7 +39,7 @@ async function withRetry(operation, maxRetries = 3) {
  * Resolves API key for the user, enforces daily quota for free server keys,
  * and returns initialized OpenAI client.
  */
-async function resolveAiClient(userId, { enforceQuota = true, callCount = 1 } = {}) {
+export async function resolveAiClient(userId, { enforceQuota = true, callCount = 1 } = {}) {
   let key = env.OPENROUTER_API_KEY;
   let isCustom = false;
 
