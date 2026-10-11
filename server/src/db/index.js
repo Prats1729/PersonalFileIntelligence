@@ -57,7 +57,9 @@ export const query = async (text, params) => {
   } catch (err) {
     const isConnectionError =
       err.code === "ECONNRESET" ||
+      err.code === "ENOTFOUND" ||
       err.code === "57P01" ||
+      err.message?.includes("getaddrinfo") ||
       err.message?.includes("Connection terminated") ||
       err.message?.includes("timeout") ||
       err.message?.includes("closed");
