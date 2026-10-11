@@ -197,7 +197,7 @@ export async function extractDocumentText(
     name.endsWith(".csv") ||
     name.endsWith(".md")
   ) {
-    return buffer.subarray(0, MAX_TEXT_CHARS).toString("utf-8").trim();
+    return buffer.subarray(0, env.MAX_EXTRACT_CHARS).toString("utf-8").trim();
   }
 
   // Case 2: PDF Document
@@ -207,7 +207,7 @@ export async function extractDocumentText(
 
     // If substantial digital text exists (not just scanner footer like "-- 1 of 1 --")
     if (text && !isBoilerplateScannerText(text)) {
-      return text.slice(0, MAX_TEXT_CHARS);
+      return text.slice(0, env.MAX_EXTRACT_CHARS);
     }
 
     // Step B: For scans or boilerplate-only PDFs, attempt Vision OCR
@@ -215,7 +215,7 @@ export async function extractDocumentText(
       `📄 Document "${fileName}" contains no substantial digital text layer. Invoking Vision OCR...`,
     );
     const visionText = await extractWithGeminiVision(buffer, "application/pdf", userId);
-    return (visionText || text || "").slice(0, MAX_TEXT_CHARS);
+    return (visionText || text || "").slice(0, env.MAX_EXTRACT_CHARS);
   }
 
   // Case 3: Images (PNG, JPG, WebP)
@@ -225,7 +225,7 @@ export async function extractDocumentText(
     if (!visionText) {
       visionText = await extractWithGeminiVision(buffer, mime || "image/jpeg", userId);
     }
-    return (visionText || "").slice(0, MAX_TEXT_CHARS);
+    return (visionText || "").slice(0, env.MAX_EXTRACT_CHARS);
   }
 
   return "";

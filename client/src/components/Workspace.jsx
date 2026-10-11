@@ -33,7 +33,8 @@ import {
   Menu,
   Trash,
   ExternalLink,
-  Share2
+  Share2,
+  Loader2
 } from "lucide-react";
 
 export default function Workspace({ user, onLogout, isLoggingOut }) {
@@ -176,6 +177,18 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
     fetchFiles();
     fetchChats();
   }, []);
+
+  // Auto-refresh when files are processing in the background
+  useEffect(() => {
+    const hasProcessing = files.some((f) => f.status === "processing");
+    if (!hasProcessing) return;
+
+    const interval = setInterval(() => {
+      fetchFiles();
+    }, 3500);
+
+    return () => clearInterval(interval);
+  }, [files]);
 
   // 2. Keyboard Shortcuts Listener
   useEffect(() => {
@@ -467,7 +480,7 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
       } else if (countSkipped > 0 && countUploaded === 0) {
         toast(`All ${countSkipped} file(s) already in library (skipped duplicates)`);
       } else if (countUploaded > 0) {
-        toast.success(`${countUploaded} file(s) uploaded and categorized!`);
+        toast.success(`${countUploaded} file(s) uploaded successfully!`);
       }
       if (countFailed > 0) {
         toast.error(`${countFailed} file(s) failed. Retry available in Upload Manager.`);
@@ -1704,9 +1717,20 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
                           </button>
                         </div>
                         <div className="mt-1 flex items-center gap-1.5">
-                          <span className="text-[10px] font-mono px-1.5 py-0.2 bg-[#14b8a6]/10 border border-[#14b8a6]/30 text-[#14b8a6] rounded">
-                            Indexed &amp; Searchable
-                          </span>
+                          {selectedFile.status === "processing" ? (
+                            <span className="text-[10px] font-mono px-1.5 py-0.5 bg-blue-500/10 border border-blue-500/30 text-blue-400 rounded flex items-center gap-1">
+                              <Loader2 className="w-2.5 h-2.5 animate-spin" />
+                              Processing OCR &amp; Chunks
+                            </span>
+                          ) : selectedFile.status === "failed" ? (
+                            <span className="text-[10px] font-mono px-1.5 py-0.5 bg-rose-500/10 border border-rose-500/30 text-rose-400 rounded">
+                              OCR Extraction Failed
+                            </span>
+                          ) : (
+                            <span className="text-[10px] font-mono px-1.5 py-0.5 bg-[#14b8a6]/10 border border-[#14b8a6]/30 text-[#14b8a6] rounded">
+                              Indexed &amp; Searchable
+                            </span>
+                          )}
                         </div>
                         <p className="font-mono text-[10px] text-[#64748b] mt-1 truncate">
                           Drive ID: {selectedFile.drive_file_id}
@@ -1802,6 +1826,11 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
                       {selectedFile.extracted_text ? (
                         <div className="p-2.5 bg-[#0d0e11] border border-[#232732] rounded font-mono text-[11px] text-[#bdc8d1] leading-relaxed max-h-48 overflow-y-auto custom-scrollbar select-text whitespace-pre-wrap">
                           {selectedFile.extracted_text}
+                        </div>
+                      ) : selectedFile.status === "processing" ? (
+                        <div className="p-4 bg-[#0d0e11] border border-dashed border-[#232732] rounded font-mono text-[11px] text-blue-400 flex flex-col items-center justify-center gap-2 text-center">
+                          <Loader2 className="w-4 h-4 animate-spin text-blue-400" />
+                          <span>Extracting text layer and chunks in background...</span>
                         </div>
                       ) : (
                         <div className="p-4 bg-[#0d0e11] border border-dashed border-[#232732] rounded font-mono text-[11px] text-[#64748b] flex flex-col items-center justify-center gap-2.5 text-center">
