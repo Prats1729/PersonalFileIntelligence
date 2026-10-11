@@ -18,9 +18,9 @@ export async function saveFileRecord(
   status = "ready"
 ) {
   const insertSql = `
-    INSERT INTO files (user_id, drive_file_id, original_name, mime_type, size_bytes, context_note, ai_result_folder, extracted_text, status, summary_status)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending')
-    RETURNING id, drive_file_id, original_name, mime_type, size_bytes, context_note, ai_result_folder, extracted_text, status, summary_status, summary, created_at;
+    INSERT INTO files (user_id, drive_file_id, original_name, mime_type, size_bytes, context_note, ai_result_folder, extracted_text, status, summary_status, ocr_status)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending', 'pending')
+    RETURNING id, drive_file_id, original_name, mime_type, size_bytes, context_note, ai_result_folder, extracted_text, status, summary_status, ocr_status, pages_total, pages_done, ocr_note, summary, created_at;
   `;
   const result = await query(insertSql, [
     userId,
