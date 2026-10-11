@@ -68,6 +68,21 @@ function loadAndValidateEnv() {
     errors.push("DAILY_FREE_AI_QUOTA must be a non-negative integer.");
   }
 
+  const MAX_PDF_PAGES = parseInt(process.env.MAX_PDF_PAGES || "100", 10);
+  if (isNaN(MAX_PDF_PAGES) || MAX_PDF_PAGES <= 0) {
+    errors.push("MAX_PDF_PAGES must be a positive integer.");
+  }
+
+  const MAX_EXTRACT_CHARS = parseInt(process.env.MAX_EXTRACT_CHARS || "400000", 10);
+  if (isNaN(MAX_EXTRACT_CHARS) || MAX_EXTRACT_CHARS <= 0) {
+    errors.push("MAX_EXTRACT_CHARS must be a positive integer.");
+  }
+
+  const PDF_PARSE_TIMEOUT_MS = parseInt(process.env.PDF_PARSE_TIMEOUT_MS || "30000", 10);
+  if (isNaN(PDF_PARSE_TIMEOUT_MS) || PDF_PARSE_TIMEOUT_MS <= 0) {
+    errors.push("PDF_PARSE_TIMEOUT_MS must be a positive integer.");
+  }
+
   if (errors.length > 0) {
     const errorReport = [
       "==================================================",
@@ -94,6 +109,9 @@ function loadAndValidateEnv() {
     SESSION_SECRET,
     ENCRYPTION_MASTER_KEY,
     DAILY_FREE_AI_QUOTA,
+    MAX_PDF_PAGES,
+    MAX_EXTRACT_CHARS,
+    PDF_PARSE_TIMEOUT_MS,
     OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY || "",
     GEMINI_API_KEY: process.env.GEMINI_API_KEY || "",
     LOG_LEVEL,
