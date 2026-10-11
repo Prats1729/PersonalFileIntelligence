@@ -83,6 +83,31 @@ function loadAndValidateEnv() {
     errors.push("PDF_PARSE_TIMEOUT_MS must be a positive integer.");
   }
 
+  const PDF_MIN_PAGE_CHARS = parseInt(process.env.PDF_MIN_PAGE_CHARS || "100", 10);
+  if (isNaN(PDF_MIN_PAGE_CHARS) || PDF_MIN_PAGE_CHARS < 0) {
+    errors.push("PDF_MIN_PAGE_CHARS must be a non-negative integer.");
+  }
+
+  const MAX_OCR_PAGES_PER_FILE = parseInt(process.env.MAX_OCR_PAGES_PER_FILE || "150", 10);
+  if (isNaN(MAX_OCR_PAGES_PER_FILE) || MAX_OCR_PAGES_PER_FILE <= 0) {
+    errors.push("MAX_OCR_PAGES_PER_FILE must be a positive integer.");
+  }
+
+  const OCR_PAGE_TIMEOUT_MS = parseInt(process.env.OCR_PAGE_TIMEOUT_MS || "15000", 10);
+  if (isNaN(OCR_PAGE_TIMEOUT_MS) || OCR_PAGE_TIMEOUT_MS <= 0) {
+    errors.push("OCR_PAGE_TIMEOUT_MS must be a positive integer.");
+  }
+
+  const OCR_BATCH_SIZE = parseInt(process.env.OCR_BATCH_SIZE || "3", 10);
+  if (isNaN(OCR_BATCH_SIZE) || OCR_BATCH_SIZE <= 0) {
+    errors.push("OCR_BATCH_SIZE must be a positive integer.");
+  }
+
+  const OCR_STALE_TIMEOUT_MINUTES = parseInt(process.env.OCR_STALE_TIMEOUT_MINUTES || "5", 10);
+  if (isNaN(OCR_STALE_TIMEOUT_MINUTES) || OCR_STALE_TIMEOUT_MINUTES <= 0) {
+    errors.push("OCR_STALE_TIMEOUT_MINUTES must be a positive integer.");
+  }
+
   if (errors.length > 0) {
     const errorReport = [
       "==================================================",
@@ -112,6 +137,11 @@ function loadAndValidateEnv() {
     MAX_PDF_PAGES,
     MAX_EXTRACT_CHARS,
     PDF_PARSE_TIMEOUT_MS,
+    PDF_MIN_PAGE_CHARS,
+    MAX_OCR_PAGES_PER_FILE,
+    OCR_PAGE_TIMEOUT_MS,
+    OCR_BATCH_SIZE,
+    OCR_STALE_TIMEOUT_MINUTES,
     OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY || "",
     GEMINI_API_KEY: process.env.GEMINI_API_KEY || "",
     LOG_LEVEL,
