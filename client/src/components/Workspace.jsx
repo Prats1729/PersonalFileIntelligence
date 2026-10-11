@@ -500,6 +500,11 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
     }
   };
 
+  // Dismiss individual failed/completed item from Upload Manager widget
+  const handleDismissUploadItem = (itemId) => {
+    setUploadQueue((prev) => prev.filter((item) => item.id !== itemId));
+  };
+
   // Retry individual failed file from Upload Manager widget
   const handleRetryUploadItem = async (queueItem) => {
     if (!queueItem.file) {
@@ -700,6 +705,14 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
       });
       if (!res.ok) throw new Error("OCR extraction failed");
       const data = await res.json();
+      if (res.status === 202) {
+        toast.success("OCR started in background! Tracking progress...", { id: ocrToast });
+        setFiles((prev) =>
+          prev.map((f) => (f.id === fileId ? { ...f, ocr_status: "processing", status: "processing" } : f))
+        );
+        if (typeof fetchFiles === "function") fetchFiles();
+        return;
+      }
       const extracted = data.extractedText || "";
       setFiles((prev) =>
         prev.map((f) => (f.id === fileId ? { ...f, extracted_text: extracted, status: "ready" } : f))
@@ -2284,9 +2297,9 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
                           }
                         >
                           {item.status === "uploading"
-                            ? "Uploading & categorizing..."
+                            ? "Uploading for processing..."
                             : item.status === "done"
-                            ? "Complete"
+                            ? "Ready for processing!"
                             : item.status === "skipped"
                             ? "Skipped (Duplicate)"
                             : "Failed"}
@@ -2296,14 +2309,23 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
                   </div>
 
                   {item.status === "failed" && (
-                    <button
-                      onClick={() => handleRetryUploadItem(item)}
-                      className="px-2 py-0.5 bg-red-500/20 hover:bg-red-500/30 text-red-300 border border-red-500/40 rounded text-[10px] flex items-center gap-1 transition-colors shrink-0"
-                      title="Retry upload"
-                    >
-                      <RefreshCw className="w-2.5 h-2.5" />
-                      Retry
-                    </button>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <button
+                        onClick={() => handleRetryUploadItem(item)}
+                        className="px-2 py-0.5 bg-red-500/20 hover:bg-red-500/30 text-red-300 border border-red-500/40 rounded text-[10px] flex items-center gap-1 transition-colors"
+                        title="Retry upload"
+                      >
+                        <RefreshCw className="w-2.5 h-2.5" />
+                        Retry
+                      </button>
+                      <button
+                        onClick={() => handleDismissUploadItem(item.id)}
+                        className="p-1 hover:bg-[#232732] rounded text-[#64748b] hover:text-red-400 transition-colors"
+                        title="Dismiss / Cancel"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </div>
                   )}
                 </div>
               ))}
