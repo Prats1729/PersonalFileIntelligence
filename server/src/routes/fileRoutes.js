@@ -11,7 +11,7 @@ import { syncUserWithDrive } from "../services/syncService.js";
 import { extractDocumentText } from "../services/ocrService.js";
 import { saveFileChunks } from "../services/chunkService.js";
 import { processFileSummary, lazyBackfillFile } from "../services/summaryService.js";
-import { processPdfPipeline } from "../services/pdfPipelineService.js";
+import { processPdfPipeline, processNextPendingOcrJob } from "../services/pdfPipelineService.js";
 import { ALLOWED_EXTENSIONS, ALLOWED_MIME_TYPES, sanitizeFilename, verifyBufferSignature } from "../utils/fileValidation.js";
 import { AppError } from "../middleware/errorHandler.js";
 
@@ -401,14 +401,23 @@ router.post("/:id/ocr", requireAuth, async (req, res) => {
     const isPdf = fileRecord.mime_type?.includes("pdf") || fileRecord.original_name.toLowerCase().endsWith(".pdf");
 
     if (isPdf) {
-      const pipelineResult = await processPdfPipeline(fileRecord, buffer, userId);
+      await query(
+        `UPDATE files
+         SET ocr_status = 'pending', ocr_note = NULL, updated_at = NOW()
+         WHERE id = $1 AND user_id = $2`,
+        [fileId, userId]
+      );
+
+      // Trigger background worker asynchronously without blocking the HTTP request
+      processNextPendingOcrJob().catch((err) =>
+        console.warn(`[Async OCR Trigger Error for ${fileId}]:`, err.message)
+      );
+
       const updated = await getFileRecord(userId, fileId);
-      return res.status(200).json({
+      return res.status(202).json({
         success: true,
+        message: "OCR processing started in background",
         file: updated,
-        extractedText: pipelineResult.extractedText,
-        isPartial: pipelineResult.isPartial,
-        ocrNote: pipelineResult.ocrNote,
       });
     }
 

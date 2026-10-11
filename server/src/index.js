@@ -7,6 +7,7 @@ import { logger, httpLogger } from "./utils/logger.js";
 import { checkDbHealth, closePool, query } from "./db/index.js";
 import { startSyncJob, stopSyncJob } from "./services/syncService.js";
 import { startSummarySweepJob, stopSummarySweepJob } from "./services/summaryService.js";
+import { startOcrWorkerJob, stopOcrWorkerJob } from "./services/pdfPipelineService.js";
 import authRoutes from "./routes/authRoutes.js";
 import fileRoutes from "./routes/fileRoutes.js";
 import chatRoutes from "./routes/chatRoutes.js";
@@ -96,6 +97,7 @@ app.use(errorHandler);
 // 10. Start Background Jobs & Startup Sweeps
 startSyncJob();
 startSummarySweepJob();
+startOcrWorkerJob();
 
 // 11. Start HTTP Server
 const server = app.listen(env.PORT, () => {
@@ -116,6 +118,7 @@ function gracefulShutdown(signal) {
   // Stop accepting new requests & stop scheduled background cron
   stopSyncJob();
   stopSummarySweepJob();
+  stopOcrWorkerJob();
 
   server.close(async () => {
     logger.info("HTTP server closed. Draining database connection pool...");

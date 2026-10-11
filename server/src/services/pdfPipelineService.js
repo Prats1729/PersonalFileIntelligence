@@ -8,6 +8,8 @@ import { getActiveKeyForUser, enforceDailyFreeQuota } from "./keyService.js";
 import { saveFileChunks } from "./chunkService.js";
 import { processFileSummary } from "./summaryService.js";
 import { extractWithOpenRouterVision, extractWithGeminiVision } from "./ocrService.js";
+import { getUserById } from "./fileService.js";
+import { downloadFileBuffer } from "./driveService.js";
 
 /**
  * Calculates SHA-256 hash of a file buffer.
@@ -56,6 +58,70 @@ export async function claimNextOcrJob() {
     [job.id]
   );
   return job;
+}
+
+let ocrWorkerTimer = null;
+let isOcrWorkerRunning = false;
+
+/**
+ * Claims and processes the next pending OCR file.
+ */
+export async function processNextPendingOcrJob() {
+  if (isOcrWorkerRunning) return null;
+  isOcrWorkerRunning = true;
+  try {
+    // 1. Recover stale processing rows
+    await resetStaleOcrJobs(env.OCR_STALE_TIMEOUT_MINUTES || 5);
+
+    // 2. Claim next pending job atomically
+    const job = await claimNextOcrJob();
+    if (!job) return null;
+
+    console.log(`[OCR Worker] Claimed file "${job.original_name}" (${job.id})`);
+
+    const user = await getUserById(job.user_id);
+    if (!user?.google_refresh_token) {
+      await query(
+        `UPDATE files SET ocr_status = 'failed', ocr_note = 'Google authentication missing', status = 'failed', updated_at = NOW() WHERE id = $1`,
+        [job.id]
+      );
+      return null;
+    }
+
+    const buffer = await downloadFileBuffer(user.google_refresh_token, job.drive_file_id);
+    const result = await processPdfPipeline(job, buffer, job.user_id);
+    console.log(`[OCR Worker] Finished processing "${job.original_name}" (${job.id})`);
+    return result;
+  } catch (err) {
+    console.error("[OCR Worker Error]:", err.message);
+    return null;
+  } finally {
+    isOcrWorkerRunning = false;
+  }
+}
+
+/**
+ * Starts the periodic background worker for OCR jobs.
+ */
+export function startOcrWorkerJob(intervalMs = 10000) {
+  if (ocrWorkerTimer) return;
+  // Sweep once on startup
+  processNextPendingOcrJob().catch(() => {});
+  ocrWorkerTimer = setInterval(() => {
+    processNextPendingOcrJob().catch(() => {});
+  }, intervalMs);
+  if (ocrWorkerTimer.unref) ocrWorkerTimer.unref();
+  console.log(`[OCR Worker] Initialized recurring sweep (every ${intervalMs / 1000}s)`);
+}
+
+/**
+ * Stops the periodic background worker.
+ */
+export function stopOcrWorkerJob() {
+  if (ocrWorkerTimer) {
+    clearInterval(ocrWorkerTimer);
+    ocrWorkerTimer = null;
+  }
 }
 
 /**
@@ -205,11 +271,18 @@ export async function processPdfPipeline(fileRecord, pdfBuffer, userId, options 
   const totalPages = doc.numPages;
   const pagesToScan = Math.min(totalPages, env.MAX_PDF_PAGES);
 
+  // Check how many pages are already done from a prior run
+  const initialDoneRes = await query(
+    `SELECT count(*)::int as cnt FROM file_pages WHERE file_id = $1 AND status = 'done'`,
+    [fileId]
+  );
+  let pagesDone = initialDoneRes.rows[0]?.cnt || 0;
+
   await query(
     `UPDATE files
-     SET pages_total = $1, pages_done = 0, updated_at = NOW()
-     WHERE id = $2 AND user_id = $3`,
-    [totalPages, fileId, userId]
+     SET pages_total = $1, pages_done = $2, updated_at = NOW()
+     WHERE id = $3 AND user_id = $4`,
+    [totalPages, pagesDone, fileId, userId]
   );
 
   const pageAnalyses = [];
@@ -261,7 +334,7 @@ export async function processPdfPipeline(fileRecord, pdfBuffer, userId, options 
     }
   }
 
-  // Batch insert page records into file_pages (reduces DB network roundtrips from N to ceil(N/50))
+  // Batch insert page records into file_pages without overwriting already completed pages
   if (pageAnalyses.length > 0) {
     const CHUNK_SIZE = 50;
     for (let i = 0; i < pageAnalyses.length; i += CHUNK_SIZE) {
@@ -291,9 +364,10 @@ export async function processPdfPipeline(fileRecord, pdfBuffer, userId, options 
         `INSERT INTO file_pages (file_id, user_id, page_number, text, visual_description, source, status, created_at, updated_at)
          VALUES ${values.join(", ")}
          ON CONFLICT (file_id, page_number) DO UPDATE SET
-           text = EXCLUDED.text,
-           source = EXCLUDED.source,
-           status = EXCLUDED.status,
+           text = CASE WHEN file_pages.status = 'done' THEN file_pages.text ELSE EXCLUDED.text END,
+           visual_description = CASE WHEN file_pages.status = 'done' THEN file_pages.visual_description ELSE EXCLUDED.visual_description END,
+           source = CASE WHEN file_pages.status = 'done' THEN file_pages.source ELSE EXCLUDED.source END,
+           status = CASE WHEN file_pages.status = 'done' THEN file_pages.status ELSE EXCLUDED.status END,
            updated_at = NOW()`,
         params
       );
@@ -306,8 +380,6 @@ export async function processPdfPipeline(fileRecord, pdfBuffer, userId, options 
   const visionPages = pageAnalyses.filter(
     (p) => p.classification.classification === "needs_ocr" || p.classification.classification === "has_figures"
   );
-
-  let pagesDone = pageAnalyses.filter((p) => p.classification.classification === "digital").length;
 
   // If 100% of pages are digital, finish fast with zero AI calls
   if (visionPages.length === 0) {
@@ -355,10 +427,54 @@ export async function processPdfPipeline(fileRecord, pdfBuffer, userId, options 
       await query(
         `UPDATE file_pages
          SET status = 'failed', text = COALESCE(NULLIF(text, ''), '[Page skipped due to OCR page cap]'), updated_at = NOW()
-         WHERE file_id = $1 AND page_number = $2`,
+         WHERE file_id = $1 AND page_number = $2 AND status != 'done'`,
         [fileId, sk.pageNum]
       );
     }
+  }
+
+  // Check currently completed pages to avoid repeating work
+  const doneRes = await query(
+    `SELECT page_number FROM file_pages WHERE file_id = $1 AND status = 'done'`,
+    [fileId]
+  );
+  const donePagesSet = new Set(doneRes.rows.map((r) => r.page_number));
+  pagesDone = donePagesSet.size;
+
+  // Filter out pages that are ALREADY DONE
+  const pendingVisionPages = pagesToProcessWithVision.filter((p) => !donePagesSet.has(p.pageNum));
+
+  // If all vision pages are already completed, finalize and return
+  if (pendingVisionPages.length === 0) {
+    const fullText = await assembleCompositeText(fileId);
+    const finalStatus = isPartial ? "partial" : "done";
+    await query(
+      `UPDATE files
+       SET extracted_text = $1,
+           pages_done = $2,
+           ocr_status = $3,
+           status = 'ready',
+           ocr_note = $4,
+           updated_at = NOW()
+       WHERE id = $5 AND user_id = $6`,
+      [fullText, pagesDone, finalStatus, ocrNote, fileId, userId]
+    );
+
+    if (fullText) {
+      await saveFileChunks(fileId, userId, fullText);
+      if (shouldTriggerSummary) {
+        processFileSummary(fileId, userId).catch(() => {});
+      }
+    }
+
+    return {
+      success: true,
+      isPartial,
+      ocrNote,
+      pagesTotal: totalPages,
+      pagesDone,
+      extractedText: fullText,
+    };
   }
 
   // Quota Accounting: Charge exactly ONE quota unit per document's vision run (if using server key)
@@ -388,8 +504,8 @@ export async function processPdfPipeline(fileRecord, pdfBuffer, userId, options 
 
   // 7. Render and Process Vision Pages in Batches
   const BATCH_SIZE = env.OCR_BATCH_SIZE || 3;
-  for (let b = 0; b < pagesToProcessWithVision.length; b += BATCH_SIZE) {
-    const batch = pagesToProcessWithVision.slice(b, b + BATCH_SIZE);
+  for (let b = 0; b < pendingVisionPages.length; b += BATCH_SIZE) {
+    const batch = pendingVisionPages.slice(b, b + BATCH_SIZE);
 
     await Promise.all(
       batch.map(async (item) => {
@@ -423,8 +539,6 @@ export async function processPdfPipeline(fileRecord, pdfBuffer, userId, options 
               [visualDesc && visualDesc !== "NO_VISUALS" ? visualDesc : null, fileId, pageNum]
             );
           }
-
-          pagesDone++;
         } catch (pageErr) {
           console.warn(`[Page OCR Error] File ${fileId} Page ${pageNum}:`, pageErr.message);
           await query(
@@ -437,7 +551,13 @@ export async function processPdfPipeline(fileRecord, pdfBuffer, userId, options 
       })
     );
 
-    // Update partial progress in files table
+    // Update real count of completed pages in files table
+    const doneCountRes = await query(
+      `SELECT count(*)::int as cnt FROM file_pages WHERE file_id = $1 AND status = 'done'`,
+      [fileId]
+    );
+    pagesDone = doneCountRes.rows[0]?.cnt || pagesDone;
+
     await query(
       `UPDATE files
        SET pages_done = $1, updated_at = NOW()
