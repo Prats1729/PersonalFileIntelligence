@@ -1,3 +1,5 @@
+process.env.NODE_ENV = "test";
+
 import { pool, query, setActiveSchema } from "../src/db/index.js";
 import { runMigrations } from "../src/db/migrate.js";
 import { generateAppToken } from "../src/services/authService.js";
