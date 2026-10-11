@@ -1470,10 +1470,20 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
                           )}
                         </td>
                         <td className="pr-2">
-                          {file.status === "processing" ? (
-                            <span className="inline-flex items-center gap-1.5 text-[11px] text-[#38bdf8] bg-[#38bdf8]/10 border border-[#38bdf8]/30 px-1.5 py-0.5 rounded font-mono">
-                              <span className="w-1.5 h-1.5 rounded-full bg-[#38bdf8] animate-ping"></span>
-                              Processing
+                          {file.status === "processing" || file.ocr_status === "processing" ? (
+                            <span className="inline-flex items-center gap-1.5 text-[11px] text-[#38bdf8] bg-[#38bdf8]/10 border border-[#38bdf8]/30 px-1.5 py-0.5 rounded font-mono" title={file.pages_total ? `OCR ${file.pages_done || 0}/${file.pages_total}` : "Processing"}>
+                              <Loader2 className="w-2.5 h-2.5 animate-spin" />
+                              {file.pages_total ? `OCR ${file.pages_done || 0}/${file.pages_total}` : "Processing"}
+                            </span>
+                          ) : file.ocr_status === "partial" ? (
+                            <span className="inline-flex items-center gap-1.5 text-[11px] text-amber-400 bg-amber-400/10 border border-amber-400/30 px-1.5 py-0.5 rounded font-mono" title={file.ocr_note || "Partial OCR"}>
+                              <span className="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
+                              Partial ({file.pages_done || 0}/{file.pages_total || "?"})
+                            </span>
+                          ) : file.status === "failed" || file.ocr_status === "failed" ? (
+                            <span className="inline-flex items-center gap-1.5 text-[11px] text-rose-400 bg-rose-400/10 border border-rose-400/30 px-1.5 py-0.5 rounded font-mono">
+                              <span className="w-1.5 h-1.5 rounded-full bg-rose-400"></span>
+                              Failed
                             </span>
                           ) : (
                             <span className="inline-flex items-center gap-1.5 text-[11px] text-[#14b8a6] bg-[#14b8a6]/10 border border-[#14b8a6]/30 px-1.5 py-0.5 rounded font-mono">
@@ -1716,13 +1726,18 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
                             <Star className={`w-3.5 h-3.5 ${selectedFile.is_favorite ? "fill-amber-400 text-amber-400" : ""}`} />
                           </button>
                         </div>
-                        <div className="mt-1 flex items-center gap-1.5">
-                          {selectedFile.status === "processing" ? (
+                        <div className="mt-1 flex items-center gap-1.5 flex-wrap">
+                          {selectedFile.status === "processing" || selectedFile.ocr_status === "processing" ? (
                             <span className="text-[10px] font-mono px-1.5 py-0.5 bg-blue-500/10 border border-blue-500/30 text-blue-400 rounded flex items-center gap-1">
                               <Loader2 className="w-2.5 h-2.5 animate-spin" />
-                              Processing OCR &amp; Chunks
+                              {selectedFile.pages_total ? `OCR ${selectedFile.pages_done || 0}/${selectedFile.pages_total}` : "Processing OCR & Chunks"}
                             </span>
-                          ) : selectedFile.status === "failed" ? (
+                          ) : selectedFile.ocr_status === "partial" ? (
+                            <span className="text-[10px] font-mono px-1.5 py-0.5 bg-amber-500/10 border border-amber-500/30 text-amber-400 rounded flex items-center gap-1" title={selectedFile.ocr_note || "OCR capped at max pages"}>
+                              <AlertCircle className="w-2.5 h-2.5" />
+                              Partial OCR ({selectedFile.pages_done || 0}/{selectedFile.pages_total || "?"})
+                            </span>
+                          ) : selectedFile.status === "failed" || selectedFile.ocr_status === "failed" ? (
                             <span className="text-[10px] font-mono px-1.5 py-0.5 bg-rose-500/10 border border-rose-500/30 text-rose-400 rounded">
                               OCR Extraction Failed
                             </span>
@@ -1823,14 +1838,21 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
                         )}
                       </div>
 
+                      {selectedFile.ocr_note && (
+                        <div className="p-2 mb-1.5 bg-amber-500/10 border border-amber-500/30 rounded text-amber-400 text-[10px] font-mono flex items-center gap-1.5 leading-tight">
+                          <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                          <span>{selectedFile.ocr_note}</span>
+                        </div>
+                      )}
+
                       {selectedFile.extracted_text ? (
                         <div className="p-2.5 bg-[#0d0e11] border border-[#232732] rounded font-mono text-[11px] text-[#bdc8d1] leading-relaxed max-h-48 overflow-y-auto custom-scrollbar select-text whitespace-pre-wrap">
                           {selectedFile.extracted_text}
                         </div>
-                      ) : selectedFile.status === "processing" ? (
+                      ) : selectedFile.status === "processing" || selectedFile.ocr_status === "processing" ? (
                         <div className="p-4 bg-[#0d0e11] border border-dashed border-[#232732] rounded font-mono text-[11px] text-blue-400 flex flex-col items-center justify-center gap-2 text-center">
                           <Loader2 className="w-4 h-4 animate-spin text-blue-400" />
-                          <span>Extracting text layer and chunks in background...</span>
+                          <span>{selectedFile.pages_total ? `Processing OCR (${selectedFile.pages_done || 0}/${selectedFile.pages_total} pages)...` : "Extracting text layer and chunks in background..."}</span>
                         </div>
                       ) : (
                         <div className="p-4 bg-[#0d0e11] border border-dashed border-[#232732] rounded font-mono text-[11px] text-[#64748b] flex flex-col items-center justify-center gap-2.5 text-center">
