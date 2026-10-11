@@ -15,6 +15,7 @@ import { chatWithAI, generateChatTitle } from "../services/aiService.js";
 import { getUserById, getFileRecord } from "../services/fileService.js";
 import { downloadFileBuffer } from "../services/driveService.js";
 import { extractDocumentText } from "../services/ocrService.js";
+import { searchRelevantChunks } from "../services/chunkService.js";
 
 const router = Router();
 
@@ -36,6 +37,13 @@ function expandSlashCommand(text) {
     }
   }
   return text;
+}
+
+export function isOverviewQuery(text) {
+  if (!text || typeof text !== "string") return false;
+  const t = text.trim().toLowerCase();
+  if (t.startsWith("/summary") || t.startsWith("/notes")) return true;
+  return /\b(summar(y|ize|ization)|overview|outline|high[- ]level|tldr|tl;dr|what is this (about|paper|document|pdf)|big picture|core concepts|main points|takeaways)\b/i.test(t);
 }
 
 router.use(chatLimiter);
@@ -119,11 +127,12 @@ router.post("/:chatId", requireAuth, async (req, res) => {
     const { mentionedFileIds, groundingMode = "strict", scope = "document" } = req.body;
     let combinedFileText = "";
     const attachedContextNotes = [];
+    const isOverview = isOverviewQuery(message);
 
-    // --- STEP 3.5: THE MIDDLEMAN INJECTION WITH CONTEXT NOTES ---
+    // --- STEP 3.5: DUAL-REPRESENTATION RETRIEVAL (Summary for Overview, tsvector Chunks for Specific) ---
     if (mentionedFileIds && mentionedFileIds.length > 0) {
       console.log(
-        `User mentioned ${mentionedFileIds.length} files. Downloading and reading...`,
+        `User mentioned ${mentionedFileIds.length} files (overviewMode=${isOverview}). Resolving context...`,
       );
       try {
         const user = await getUserById(userId);
@@ -143,7 +152,7 @@ router.post("/:chatId", requireAuth, async (req, res) => {
             }
 
             let text = fileRecord.extracted_text;
-            if (!text) {
+            if (!text && fileRecord.drive_file_id) {
               const buffer = await downloadFileBuffer(
                 user.google_refresh_token,
                 fileRecord.drive_file_id,
@@ -151,9 +160,26 @@ router.post("/:chatId", requireAuth, async (req, res) => {
               text = await extractDocumentText(buffer, fileRecord.mime_type, fileRecord.original_name, userId);
             }
 
-            // Limit text per file to 25k characters to prevent token overflow
-            const truncatedText = text ? text.slice(0, 25000) : "No text content extracted.";
-            combinedFileText += `\n--- Document: "${fileRecord.original_name}" ---\n${noteInfo}${truncatedText}\n`;
+            if (isOverview && fileRecord.summary) {
+              // High-level overview: use pre-generated Map-Reduce academic summary
+              combinedFileText += `\n--- Document Digest: "${fileRecord.original_name}" ---\n${noteInfo}[Comprehensive Summary]:\n${fileRecord.summary}\n`;
+            } else {
+              // Specific inquiry: fetch top relevant chunks via Postgres tsvector + ts_rank full-text search
+              const topChunks = await searchRelevantChunks(userId, [fileRecord.id], message || "", 4);
+              if (topChunks && topChunks.length > 0) {
+                const summaryExcerpt = fileRecord.summary
+                  ? `[Document Overview Excerpt]:\n${fileRecord.summary.slice(0, 600)}...\n\n`
+                  : "";
+                combinedFileText += `\n--- Document Excerpts: "${fileRecord.original_name}" ---\n${noteInfo}${summaryExcerpt}[Relevant Passages (Full-Text Ranked)]:\n${topChunks.join("\n\n---\n\n")}\n`;
+              } else if (fileRecord.summary) {
+                // Fallback to summary if no chunk matched specific keywords
+                combinedFileText += `\n--- Document Digest: "${fileRecord.original_name}" ---\n${noteInfo}[Summary]:\n${fileRecord.summary}\n`;
+              } else {
+                // Final fallback to text snippet if summary isn't generated yet
+                const truncatedText = text ? text.slice(0, 15000) : "No text content extracted.";
+                combinedFileText += `\n--- Document: "${fileRecord.original_name}" ---\n${noteInfo}${truncatedText}\n`;
+              }
+            }
           } catch (fileErr) {
             console.warn(`Error processing file ${fileId} for chat:`, fileErr.message);
           }

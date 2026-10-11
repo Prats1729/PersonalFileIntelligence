@@ -8,6 +8,8 @@ import { getUserById, saveFileRecord, getFilesByUser, deleteFileRecord, getFileR
 import { categorizeFilesBulk } from "../services/aiService.js";
 import { syncUserWithDrive } from "../services/syncService.js";
 import { extractDocumentText } from "../services/ocrService.js";
+import { saveFileChunks } from "../services/chunkService.js";
+import { processFileSummary } from "../services/summaryService.js";
 import { ALLOWED_EXTENSIONS, ALLOWED_MIME_TYPES, sanitizeFilename, verifyBufferSignature } from "../utils/fileValidation.js";
 import { AppError } from "../middleware/errorHandler.js";
 
@@ -264,8 +266,21 @@ router.post("/upload", requireAuth, uploadLimiter, upload.array("files"), async 
       failedFiles,
     });
 
-    // Asynchronous Background OCR: fallback for any files that were heavy scans and couldn't finish in the fast pass
+    // Asynchronous Background Tasks: Chunk indexing & Non-blocking Summary generation
     (async () => {
+      // 1. Process files that already have text extracted
+      for (const saved of savedFiles) {
+        if (saved.extracted_text) {
+          try {
+            await saveFileChunks(saved.id, userId, saved.extracted_text);
+            await processFileSummary(saved.id, userId);
+          } catch (chunkErr) {
+            console.warn(`[Background Processing Error] "${saved.original_name}":`, chunkErr.message);
+          }
+        }
+      }
+
+      // 2. Fallback OCR for heavy scans that couldn't finish in the fast pass
       for (let i = 0; i < filesToProcess.length; i++) {
         const file = filesToProcess[i];
         const saved = savedFiles.find((s) => s.original_name === file.originalname);
@@ -274,7 +289,9 @@ router.post("/upload", requireAuth, uploadLimiter, upload.array("files"), async 
           const text = await extractDocumentText(file.buffer, file.mimetype, file.originalname, userId);
           if (text) {
             await updateFileExtractedText(saved.id, userId, text, "ready");
-            console.log(`[Background OCR Complete] Extracted ${text.length} chars for "${file.originalname}"`);
+            await saveFileChunks(saved.id, userId, text);
+            await processFileSummary(saved.id, userId);
+            console.log(`[Background OCR & Summary Complete] Extracted ${text.length} chars for "${file.originalname}"`);
           }
         } catch (ocrErr) {
           console.warn(`[OCR Error] Background extraction failed for "${file.originalname}":`, ocrErr.message);
