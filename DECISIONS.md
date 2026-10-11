@@ -13,6 +13,10 @@ This document tracks all self-approved architectural decisions, alternatives con
    Added `key_version` (default: 1) and HKDF-SHA256 key derivation. When rotating `ENCRYPTION_MASTER_KEY`, a future re-encryption migration script should iterate through `user_api_keys` with `key_version = 1` and upgrade to version 2.
 3. **Daily Free Quota Reset Window:**  
    Quota resets at 00:00 UTC using PostgreSQL `CURRENT_DATE`. For global users, local timezone resets may differ slightly.
+4. **PDF Per-Page Thresholds & Slide/Index Pages:**  
+   `PDF_MIN_PAGE_CHARS` defaults to 100 substantive letters. Pure scanner noise (`-- 1 of 585 --`) and single-line headers produce <40 characters and route to vision OCR, while real academic prose easily exceeds 150+. If users frequently upload lecture slide PDFs with sparse notes (<100 characters) that they prefer not to run OCR on, verify if `PDF_MIN_PAGE_CHARS=60` is preferred in specific environments.
+5. **PDF Page Cap in Free Tier:**  
+   `MAX_OCR_PAGES_PER_FILE` defaults to 150 pages. Large 500+ page books are OCR'd up to page 150, marked `partial`, and explain to the user in `ocr_note` that the rest was skipped to preserve quota. Free tier users are charged exactly 1 quota unit for the entire document run regardless of page count. Users with their own BYOK key bypass quota entirely.
 
 ---
 
@@ -73,3 +77,19 @@ This document tracks all self-approved architectural decisions, alternatives con
 - **Decision:** Add full randomized jitter (0-500ms) to exponential retry backoff, 45-second client timeouts, and hard 40,000-character payload bounding.
 - **Alternatives Considered:** Unlimited request payloads; static retry delays.
 - **Rationale:** Prevents thundering herds on rate limits and guards against denial-of-service / runaway token billing.
+
+### DEC-13: Per-Page PDF Hybrid Processing & Classification (Phase 7)
+- **Decision:** Classify each PDF page individually rather than whole-document. Strip boilerplate pagination (`-- 1 of 585 --`, `Page N of M`, bare digits) before measuring. Pages with >= `PDF_MIN_PAGE_CHARS` (100) clean characters and healthy letter/word ratios take the local text extraction fast path (0 AI calls). Sparse or corrupt text layers get full Vision OCR. Clean pages with significant image paint operators (`paintImageXObject`, etc.) keep extracted text and append `[Figure/Page N visual: ...]` descriptions.
+- **Alternatives Considered:** Whole-document fallback to OCR; discarding digital text when figures exist.
+- **Rationale:** Most academic and technical PDFs are mixed. Keeps digital PDFs instantaneous and free, while capturing charts, diagrams, and scanned portions without redundant API costs.
+
+### DEC-14: Concurrency Safety & Stale Job Recovery for OCR Workers
+- **Decision:** Claim pending PDF OCR jobs atomically using PostgreSQL `FOR UPDATE SKIP LOCKED`, record `ocr_started_at`, and periodically reset stale processing jobs older than `OCR_STALE_TIMEOUT_MINUTES` (5 mins) back to `pending`.
+- **Alternatives Considered:** Redis BullMQ queue; advisory locks.
+- **Rationale:** Eliminates external Redis dependency. PostgreSQL SKIP LOCKED ensures concurrent workers never duplicate work, and crash restarts cleanly resume from the exact last state without losing files.
+
+### DEC-15: Content-Hash Scoped Caching & Quota Model
+- **Decision:** Calculate SHA-256 hash of PDF buffer. Cache page records and extracted text scoped strictly by `user_id`. Charge exactly 1 daily quota unit per document vision run for free tier users regardless of page count; BYOK users bypass quota completely.
+- **Alternatives Considered:** Global multi-user content hash cache; charging 1 quota unit per page.
+- **Rationale:** Scoping cache by `user_id` preserves strict multi-tenant privacy. Charging per document protects free tier users from having their entire quota drained by a single multi-page reading assignment.
+
