@@ -16,6 +16,7 @@ import { getUserById, getFileRecord } from "../services/fileService.js";
 import { downloadFileBuffer } from "../services/driveService.js";
 import { extractDocumentText } from "../services/ocrService.js";
 import { searchRelevantChunks } from "../services/chunkService.js";
+import { lazyBackfillFile } from "../services/summaryService.js";
 
 const router = Router();
 
@@ -158,6 +159,14 @@ router.post("/:chatId", requireAuth, async (req, res) => {
                 fileRecord.drive_file_id,
               );
               text = await extractDocumentText(buffer, fileRecord.mime_type, fileRecord.original_name, userId);
+              fileRecord.extracted_text = text;
+            }
+
+            // Lazy backfill: build search chunks (0 AI cost) and queue summary once for legacy files
+            if (text) {
+              lazyBackfillFile(fileRecord, userId).catch((err) =>
+                console.warn(`[Lazy Backfill Error for ${fileRecord.id}]:`, err.message)
+              );
             }
 
             if (isOverview && fileRecord.summary) {

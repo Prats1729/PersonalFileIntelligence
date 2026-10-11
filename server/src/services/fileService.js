@@ -1,4 +1,5 @@
 import { query } from "../db/index.js";
+import { saveFileChunks } from "./chunkService.js";
 
 // Fetch user by ID to get the refresh token
 export async function getUserById(userId) {
@@ -17,9 +18,9 @@ export async function saveFileRecord(
   status = "ready"
 ) {
   const insertSql = `
-    INSERT INTO files (user_id, drive_file_id, original_name, mime_type, size_bytes, context_note, ai_result_folder, extracted_text, status)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-    RETURNING id, drive_file_id, original_name, mime_type, size_bytes, context_note, ai_result_folder, extracted_text, status, created_at;
+    INSERT INTO files (user_id, drive_file_id, original_name, mime_type, size_bytes, context_note, ai_result_folder, extracted_text, status, summary_status)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending')
+    RETURNING id, drive_file_id, original_name, mime_type, size_bytes, context_note, ai_result_folder, extracted_text, status, summary_status, summary, created_at;
   `;
   const result = await query(insertSql, [
     userId,
@@ -85,6 +86,13 @@ export async function updateFileExtractedText(fileId, userId, text, status = "re
     RETURNING *;
   `;
   const result = await query(updateSql, [text, status, fileId, userId]);
+  if (result.rows[0] && text) {
+    try {
+      await saveFileChunks(fileId, userId, text);
+    } catch (chunkErr) {
+      console.warn(`[Chunk regeneration error for ${fileId}]:`, chunkErr.message);
+    }
+  }
   return result.rows[0];
 }
 

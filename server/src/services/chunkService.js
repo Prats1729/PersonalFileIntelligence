@@ -92,12 +92,17 @@ export async function searchRelevantChunks(userId, fileIds, queryText, limit = 5
   if (!cleanQuery) return [];
 
   const result = await query(
-    `SELECT chunk_text, chunk_index, file_id,
-            ts_rank(tsv, plainto_tsquery('english', $3)) AS rank
-     FROM file_chunks
-     WHERE user_id = $1
-       AND file_id = ANY($2)
-       AND tsv @@ plainto_tsquery('english', $3)
+    `WITH query_terms AS (
+       SELECT to_tsquery('english', string_agg(lexeme, ' | ')) AS tsq
+       FROM unnest(tsvector_to_array(to_tsvector('english', $3))) AS lexeme
+     )
+     SELECT c.chunk_text, c.chunk_index, c.file_id,
+            ts_rank(c.tsv, q.tsq) AS rank
+     FROM file_chunks c, query_terms q
+     WHERE c.user_id = $1
+       AND c.file_id = ANY($2)
+       AND q.tsq IS NOT NULL
+       AND c.tsv @@ q.tsq
      ORDER BY rank DESC
      LIMIT $4`,
     [userId, fileIds, cleanQuery, limit]

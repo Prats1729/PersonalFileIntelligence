@@ -9,7 +9,7 @@ import { categorizeFilesBulk } from "../services/aiService.js";
 import { syncUserWithDrive } from "../services/syncService.js";
 import { extractDocumentText } from "../services/ocrService.js";
 import { saveFileChunks } from "../services/chunkService.js";
-import { processFileSummary } from "../services/summaryService.js";
+import { processFileSummary, lazyBackfillFile } from "../services/summaryService.js";
 import { ALLOWED_EXTENSIONS, ALLOWED_MIME_TYPES, sanitizeFilename, verifyBufferSignature } from "../utils/fileValidation.js";
 import { AppError } from "../middleware/errorHandler.js";
 
@@ -332,6 +332,25 @@ router.get("/", requireAuth, async (req, res) => {
   }
 });
 
+// Get a single file by ID (with lazy backfill for search chunks & summary queue)
+router.get("/:id", requireAuth, async (req, res) => {
+  try {
+    const file = await getFileRecord(req.user.id, req.params.id);
+    if (!file) return res.status(404).json({ error: "File not found" });
+
+    if (file.extracted_text) {
+      lazyBackfillFile(file, req.user.id).catch((err) =>
+        console.warn(`[Lazy Backfill Error for ${file.id}]:`, err.message)
+      );
+    }
+
+    return res.status(200).json(file);
+  } catch (error) {
+    console.error("Error fetching file:", error);
+    return res.status(500).json({ error: "Failed to fetch file." });
+  }
+});
+
 // Delete entire folder and all its files
 router.delete("/folder/:folderName", requireAuth, async (req, res) => {
   const { folderName } = req.params;
@@ -431,6 +450,7 @@ router.post("/:id/ocr", requireAuth, async (req, res) => {
 
     // If text already exists and is substantive (not force-refreshed, and not boilerplate like "-- 1 of 1 --")
     if (fileRecord.extracted_text && !force && fileRecord.extracted_text.trim().length > 35) {
+      lazyBackfillFile(fileRecord, userId).catch(() => {});
       return res.status(200).json({
         success: true,
         file: fileRecord,
@@ -447,6 +467,7 @@ router.post("/:id/ocr", requireAuth, async (req, res) => {
     }
 
     const updated = await updateFileExtractedText(fileRecord.id, userId, text, "ready");
+    lazyBackfillFile(updated, userId).catch(() => {});
     return res.status(200).json({
       success: true,
       file: updated,
