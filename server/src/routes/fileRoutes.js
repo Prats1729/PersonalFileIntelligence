@@ -11,6 +11,7 @@ import { syncUserWithDrive } from "../services/syncService.js";
 import { extractDocumentText } from "../services/ocrService.js";
 import { saveFileChunks } from "../services/chunkService.js";
 import { processFileSummary, lazyBackfillFile } from "../services/summaryService.js";
+import { processPdfPipeline } from "../services/pdfPipelineService.js";
 import { ALLOWED_EXTENSIONS, ALLOWED_MIME_TYPES, sanitizeFilename, verifyBufferSignature } from "../utils/fileValidation.js";
 import { AppError } from "../middleware/errorHandler.js";
 
@@ -195,35 +196,38 @@ router.post("/upload", requireAuth, uploadLimiter, upload.array("files"), async 
       for (const item of savedResults) {
         const { fileRecord, file } = item;
         try {
-          // 1. Text extraction / OCR
           const buffer = file?.buffer || (await downloadFileBuffer(user.google_refresh_token, fileRecord.drive_file_id));
-          const text = await extractDocumentText(buffer, fileRecord.mime_type, fileRecord.original_name, userId);
+          const isPdf = fileRecord.mime_type?.includes("pdf") || fileRecord.original_name.toLowerCase().endsWith(".pdf");
 
-          // 2. Update DB with extracted text, status = 'ready' (also indexes search chunks)
-          await updateFileExtractedText(fileRecord.id, userId, text || "", "ready");
+          if (isPdf) {
+            // Per-page PDF extraction and classification pipeline
+            await processPdfPipeline(fileRecord, buffer, userId);
+          } else {
+            // Standard document / image extraction
+            const text = await extractDocumentText(buffer, fileRecord.mime_type, fileRecord.original_name, userId);
+            await updateFileExtractedText(fileRecord.id, userId, text || "", "ready");
 
-          // 3. If no explicit context note was provided, optionally refine folder via AI categorization
-          if (!contextNote && text && text.trim().length > 50) {
-            try {
-              const aiResults = await categorizeFilesBulk(
-                [{ index: 0, name: fileRecord.original_name, mimeType: fileRecord.mime_type, contentSnippet: text.slice(0, 500) }],
-                null,
-                existingFolders,
-                userId
-              );
-              const resFolder = aiResults?.[0];
-              const suggested = resFolder?.suggestedNewFolder?.trim() || resFolder?.chosenExistingFolder?.trim();
-              if (suggested && suggested.toLowerCase() !== "others" && suggested.toLowerCase() !== (fileRecord.ai_result_folder || "").toLowerCase()) {
-                await query("UPDATE files SET ai_result_folder = $1 WHERE id = $2 AND user_id = $3", [suggested, fileRecord.id, userId]);
+            if (!contextNote && text && text.trim().length > 50) {
+              try {
+                const aiResults = await categorizeFilesBulk(
+                  [{ index: 0, name: fileRecord.original_name, mimeType: fileRecord.mime_type, contentSnippet: text.slice(0, 500) }],
+                  null,
+                  existingFolders,
+                  userId
+                );
+                const resFolder = aiResults?.[0];
+                const suggested = resFolder?.suggestedNewFolder?.trim() || resFolder?.chosenExistingFolder?.trim();
+                if (suggested && suggested.toLowerCase() !== "others" && suggested.toLowerCase() !== (fileRecord.ai_result_folder || "").toLowerCase()) {
+                  await query("UPDATE files SET ai_result_folder = $1 WHERE id = $2 AND user_id = $3", [suggested, fileRecord.id, userId]);
+                }
+              } catch (catErr) {
+                console.warn(`[Background Categorization Warning] "${fileRecord.original_name}":`, catErr.message);
               }
-            } catch (catErr) {
-              console.warn(`[Background Categorization Warning] "${fileRecord.original_name}":`, catErr.message);
             }
-          }
 
-          // 4. Background Map-Reduce document summarization
-          if (text && text.trim().length > 0) {
-            await processFileSummary(fileRecord.id, userId);
+            if (text && text.trim().length > 0) {
+              await processFileSummary(fileRecord.id, userId);
+            }
           }
           console.log(`[Background Processing Complete] Finished indexing & summary for "${fileRecord.original_name}"`);
         } catch (procErr) {
@@ -382,8 +386,8 @@ router.post("/:id/ocr", requireAuth, async (req, res) => {
       return res.status(401).json({ error: "Google authentication required" });
     }
 
-    // If text already exists and is substantive (not force-refreshed, and not boilerplate like "-- 1 of 1 --")
-    if (fileRecord.extracted_text && !force && fileRecord.extracted_text.trim().length > 35) {
+    // If text already exists and is substantive and not force-refreshed
+    if (fileRecord.extracted_text && !force && fileRecord.extracted_text.trim().length > 35 && fileRecord.ocr_status === "done") {
       lazyBackfillFile(fileRecord, userId).catch(() => {});
       return res.status(200).json({
         success: true,
@@ -392,10 +396,23 @@ router.post("/:id/ocr", requireAuth, async (req, res) => {
       });
     }
 
-    // Download buffer from Google Drive & extract via ocrService
+    // Download buffer from Google Drive
     const buffer = await downloadFileBuffer(user.google_refresh_token, fileRecord.drive_file_id);
-    let text = await extractDocumentText(buffer, fileRecord.mime_type, fileRecord.original_name, userId);
+    const isPdf = fileRecord.mime_type?.includes("pdf") || fileRecord.original_name.toLowerCase().endsWith(".pdf");
 
+    if (isPdf) {
+      const pipelineResult = await processPdfPipeline(fileRecord, buffer, userId);
+      const updated = await getFileRecord(userId, fileId);
+      return res.status(200).json({
+        success: true,
+        file: updated,
+        extractedText: pipelineResult.extractedText,
+        isPartial: pipelineResult.isPartial,
+        ocrNote: pipelineResult.ocrNote,
+      });
+    }
+
+    let text = await extractDocumentText(buffer, fileRecord.mime_type, fileRecord.original_name, userId);
     if (!text || text.trim().length === 0) {
       text = "No readable text detected in this document.";
     }
@@ -410,6 +427,23 @@ router.post("/:id/ocr", requireAuth, async (req, res) => {
   } catch (err) {
     console.error("On-demand OCR error:", err);
     return res.status(500).json({ error: err.message || "Failed to extract text from document" });
+  }
+});
+
+// Get individual page breakdown for a file
+router.get("/:id/pages", requireAuth, async (req, res) => {
+  try {
+    const pagesRes = await query(
+      `SELECT id, page_number, text, visual_description, source, status, created_at, updated_at
+       FROM file_pages
+       WHERE file_id = $1 AND user_id = $2
+       ORDER BY page_number ASC`,
+      [req.params.id, req.user.id]
+    );
+    res.json(pagesRes.rows);
+  } catch (err) {
+    console.error("Error fetching file pages:", err);
+    res.status(500).json({ error: "Failed to fetch file pages" });
   }
 });
 
