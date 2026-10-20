@@ -105,8 +105,11 @@ export async function processNextPendingOcrJob() {
  */
 export function startOcrWorkerJob(intervalMs = 10000) {
   if (ocrWorkerTimer) return;
-  // Sweep once on startup
-  processNextPendingOcrJob().catch(() => {});
+  // Sweep once on startup: immediately recover any interrupted processing rows from prior server run
+  resetStaleOcrJobs(0).then(() => {
+    processNextPendingOcrJob().catch(() => {});
+  }).catch(() => {});
+
   ocrWorkerTimer = setInterval(() => {
     processNextPendingOcrJob().catch(() => {});
   }, intervalMs);

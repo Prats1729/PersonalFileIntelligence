@@ -51,6 +51,9 @@ export const httpLogger = pinoHttp({
   customSuccessMessage: (req, res) => `${req.method} ${req.url} - ${res.statusCode}`,
   customErrorMessage: (req, res, err) => `${req.method} ${req.url} - ${res.statusCode} (Error: ${err.message})`,
   autoLogging: {
-    ignore: (req) => req.url === "/healthz" || req.url === "/readyz",
+    ignore: (req) =>
+      req.url === "/healthz" ||
+      req.url === "/readyz" ||
+      (req.method === "GET" && req.url === "/api/files"),
   },
 });

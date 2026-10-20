@@ -396,8 +396,6 @@ router.post("/:id/ocr", requireAuth, async (req, res) => {
       });
     }
 
-    // Download buffer from Google Drive
-    const buffer = await downloadFileBuffer(user.google_refresh_token, fileRecord.drive_file_id);
     const isPdf = fileRecord.mime_type?.includes("pdf") || fileRecord.original_name.toLowerCase().endsWith(".pdf");
 
     if (isPdf) {
@@ -420,6 +418,9 @@ router.post("/:id/ocr", requireAuth, async (req, res) => {
         file: updated,
       });
     }
+
+    // Only download buffer for non-PDFs (images, text) which process synchronously
+    const buffer = await downloadFileBuffer(user.google_refresh_token, fileRecord.drive_file_id);
 
     let text = await extractDocumentText(buffer, fileRecord.mime_type, fileRecord.original_name, userId);
     if (!text || text.trim().length === 0) {
