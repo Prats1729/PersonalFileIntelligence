@@ -1,5 +1,7 @@
 import express from "express";
 import multer from "multer";
+import path from "node:path";
+import { query } from "../db/index.js";
 import { requireAuth } from "../middleware/authMiddleware.js";
 import { uploadLimiter } from "../middleware/rateLimiter.js";
 import { uploadFileToDrive, deleteFileFromDrive, getDriveFolders, createDriveFolder, downloadFileBuffer } from "../services/driveService.js";
@@ -7,16 +9,47 @@ import { getUserById, saveFileRecord, getFilesByUser, deleteFileRecord, getFileR
 import { categorizeFilesBulk } from "../services/aiService.js";
 import { syncUserWithDrive } from "../services/syncService.js";
 import { extractDocumentText } from "../services/ocrService.js";
+import { saveFileChunks } from "../services/chunkService.js";
+import { processFileSummary, lazyBackfillFile } from "../services/summaryService.js";
+import { processPdfPipeline, processNextPendingOcrJob } from "../services/pdfPipelineService.js";
+import { ALLOWED_EXTENSIONS, ALLOWED_MIME_TYPES, sanitizeFilename, verifyBufferSignature } from "../utils/fileValidation.js";
+import { AppError } from "../middleware/errorHandler.js";
 
 const router = express.Router();
-// Use memory storage for multer with a 50MB per-file safety limit
+
+// Memory storage for multer with strict size limit (50MB) and cap of 25 files per request
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 50 * 1024 * 1024 }, // 50MB limit
+  limits: {
+    fileSize: 50 * 1024 * 1024, // 50MB per file
+    files: 25, // max 25 files per upload batch
+  },
+  fileFilter: (req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (!ALLOWED_EXTENSIONS.has(ext)) {
+      return cb(
+        new AppError(
+          `File type "${ext}" is not permitted. Supported formats: PDF, PNG, JPG, WEBP, DOCX, TXT.`,
+          400,
+          "UNSUPPORTED_FILE_TYPE"
+        )
+      );
+    }
+    if (!ALLOWED_MIME_TYPES.has(file.mimetype)) {
+      return cb(
+        new AppError(
+          `MIME type "${file.mimetype}" is not permitted.`,
+          400,
+          "INVALID_MIME_TYPE"
+        )
+      );
+    }
+    cb(null, true);
+  },
 });
 
 // Upload files
-router.post("/upload", requireAuth, uploadLimiter, upload.array("files"), async (req, res) => {
+router.post("/upload", requireAuth, uploadLimiter, upload.array("files"), async (req, res, next) => {
   if (!req.files || req.files.length === 0){
     return res.status(400).json({ error: "No file uploaded." });
   }
@@ -24,15 +57,25 @@ router.post("/upload", requireAuth, uploadLimiter, upload.array("files"), async 
   try {
     const userId = req.user.id;
     const { contextNote } = req.body;
-    const files = req.files;
 
-    // 1. Get user's Google refresh token
+    // 1. Sanitize filenames and verify binary magic numbers
+    for (const file of req.files) {
+      file.originalname = sanitizeFilename(file.originalname);
+      const ext = path.extname(file.originalname).toLowerCase();
+      if (!verifyBufferSignature(file.buffer, ext)) {
+        return res.status(400).json({
+          error: `File signature mismatch for "${file.originalname}". The content does not match the file extension.`,
+        });
+      }
+    }
+
+    // 2. Get user's Google refresh token
     const user = await getUserById(userId);
     if (!user || !user.google_refresh_token) {
       return res.status(401).json({ error: "User or Google Refresh Token not found." });
     }
 
-    // 2. Deduplication check: compare against existing user files
+    // 3. Deduplication check: compare against existing user files
     const userExistingFiles = await getFilesByUser(userId);
     const existingFileSet = new Set(
       userExistingFiles.map((f) => `${f.original_name}__${f.size_bytes}`)
@@ -65,116 +108,38 @@ router.post("/upload", requireAuth, uploadLimiter, upload.array("files"), async 
 
     let existingFolders = await getDriveFolders(user.google_refresh_token);
 
-    // 3. Concurrently extract text from file buffers for content-aware AI categorization (<30ms for digital docs)
-    const extractedTexts = await Promise.all(
-      filesToProcess.map(async (file) => {
-        try {
-          return await extractDocumentText(file.buffer, file.mimetype, file.originalname);
-        } catch (e) {
-          console.warn(`Pre-extraction failed for "${file.originalname}":`, e.message);
-          return "";
-        }
-      })
-    );
+    // Determine target folder for files:
+    // If user provided contextNote, prioritize it as the folder candidate.
+    // Otherwise fallback to "Others".
+    let targetFolder = null;
+    let finalFolderName = "Others";
 
-    const filesMetadata = filesToProcess.map((file, idx) => ({
-      index: idx,
-      name: file.originalname,
-      mimeType: file.mimetype,
-      contentSnippet: extractedTexts[idx] ? extractedTexts[idx].slice(0, 500) : "",
-    }));
-
-    let aiResults = [];
-    try {
-      aiResults = await categorizeFilesBulk(
-        filesMetadata,
-        contextNote,
-        existingFolders
+    if (contextNote && contextNote.trim().length > 0) {
+      const noteFolderCandidate = contextNote.trim().slice(0, 30);
+      targetFolder = existingFolders.find(
+        (f) => f.name.toLowerCase() === noteFolderCandidate.toLowerCase()
       );
-    } catch (aiErr) {
-      console.error("Bulk categorization failed, falling back to default:", aiErr);
-    }
-
-    // Map AI results by index or fileName for fast lookup
-    const resultMap = new Map();
-    if (Array.isArray(aiResults)) {
-      aiResults.forEach((item) => {
-        if (item.index !== undefined && item.index !== null) {
-          resultMap.set(Number(item.index), item);
-        }
-        if (item.fileName) {
-          resultMap.set(item.fileName, item);
-        }
-      });
-    }
-
-    // 4. Pre-resolve or create any newly suggested folders so concurrent uploads don't race
-    const targetFolderByFileIndex = new Map();
-    for (let i = 0; i < filesToProcess.length; i++) {
-      const file = filesToProcess[i];
-      const aiResultFolder = resultMap.get(i) || resultMap.get(file.originalname) || {
-        chosenExistingFolder: null,
-        suggestedNewFolder: null,
-      };
-
-      let targetFolder = null;
-      let finalFolderName = "Others";
-
-      if (aiResultFolder.chosenExistingFolder && !aiResultFolder.suggestedNewFolder) {
-        targetFolder = existingFolders.find(
-          (f) => f.name.toLowerCase() === aiResultFolder.chosenExistingFolder.toLowerCase()
-        );
-        if (targetFolder) finalFolderName = targetFolder.name;
-      }
-
-      if (!targetFolder && aiResultFolder.suggestedNewFolder) {
-        const trimmedNewName = aiResultFolder.suggestedNewFolder.trim();
-        targetFolder = existingFolders.find(
-          (f) => f.name.toLowerCase() === trimmedNewName.toLowerCase()
-        );
-        if (!targetFolder) {
-          targetFolder = await createDriveFolder(user.google_refresh_token, trimmedNewName);
-          existingFolders.push(targetFolder);
-        }
-        finalFolderName = targetFolder.name;
-      }
-
-      // If AI couldn't decide, use the user's Context Note as the target folder before falling back to Others
-      if (!targetFolder && contextNote && contextNote.trim().length > 0) {
-        const noteFolderCandidate = contextNote.trim().slice(0, 30);
-        targetFolder = existingFolders.find(
-          (f) => f.name.toLowerCase() === noteFolderCandidate.toLowerCase()
-        );
-        if (!targetFolder) {
-          targetFolder = await createDriveFolder(user.google_refresh_token, noteFolderCandidate);
-          existingFolders.push(targetFolder);
-        }
-        finalFolderName = targetFolder.name;
-      }
-
       if (!targetFolder) {
-        targetFolder = existingFolders.find((f) => f.name.toLowerCase() === "others");
-        if (!targetFolder) {
-          targetFolder = await createDriveFolder(user.google_refresh_token, "Others");
-          existingFolders.push(targetFolder);
-        }
-        finalFolderName = targetFolder.name;
+        targetFolder = await createDriveFolder(user.google_refresh_token, noteFolderCandidate);
+        existingFolders.push(targetFolder);
       }
-
-      targetFolderByFileIndex.set(i, { targetFolder, finalFolderName });
+      finalFolderName = targetFolder.name;
+    } else {
+      targetFolder = existingFolders.find((f) => f.name.toLowerCase() === "others");
+      if (!targetFolder) {
+        targetFolder = await createDriveFolder(user.google_refresh_token, "Others");
+        existingFolders.push(targetFolder);
+      }
+      finalFolderName = targetFolder.name;
     }
 
-    // 5. Upload files in batches of 5 to prevent Drive API rate limits / socket drops
+    // Upload files in batches of 5 to Google Drive
     const BATCH_SIZE = 5;
     const results = [];
 
     for (let b = 0; b < filesToProcess.length; b += BATCH_SIZE) {
       const batch = filesToProcess.slice(b, b + BATCH_SIZE);
-      const batchPromises = batch.map(async (file, batchIdx) => {
-        const i = b + batchIdx;
-        const { targetFolder, finalFolderName } = targetFolderByFileIndex.get(i);
-        const preExtracted = extractedTexts[i] || "";
-        const fileStatus = preExtracted ? "ready" : "processing";
+      const batchPromises = batch.map(async (file) => {
         try {
           const driveMetadata = await uploadFileToDrive(
             user.google_refresh_token,
@@ -188,11 +153,11 @@ router.post("/upload", requireAuth, uploadLimiter, upload.array("files"), async 
             file,
             contextNote,
             finalFolderName,
-            preExtracted,
-            fileStatus
+            null, // extracted_text initially null
+            "processing" // status initially processing
           );
 
-          return { success: true, fileRecord };
+          return { success: true, fileRecord, file };
         } catch (fileErr) {
           console.error(`Failed to upload "${file.originalname}":`, fileErr);
           return {
@@ -207,7 +172,8 @@ router.post("/upload", requireAuth, uploadLimiter, upload.array("files"), async 
       results.push(...batchResults);
     }
 
-    const savedFiles = results.filter((r) => r.success).map((r) => r.fileRecord);
+    const savedResults = results.filter((r) => r.success);
+    const savedFiles = savedResults.map((r) => r.fileRecord);
     const failedFiles = results.filter((r) => !r.success).map((r) => ({ fileName: r.fileName, error: r.error }));
 
     if (savedFiles.length === 0 && failedFiles.length > 0 && skippedFiles.length === 0) {
@@ -217,6 +183,7 @@ router.post("/upload", requireAuth, uploadLimiter, upload.array("files"), async 
       });
     }
 
+    // Immediately return HTTP 201 so the UI upload manager shows "Uploaded"
     res.status(201).json({
       message: `${savedFiles.length} file(s) uploaded successfully${skippedFiles.length > 0 ? `, ${skippedFiles.length} skipped` : ""}${failedFiles.length > 0 ? `, ${failedFiles.length} failed` : ""}`,
       files: savedFiles,
@@ -224,20 +191,48 @@ router.post("/upload", requireAuth, uploadLimiter, upload.array("files"), async 
       failedFiles,
     });
 
-    // Asynchronous Background OCR: fallback for any files that were heavy scans and couldn't finish in the fast pass
+    // Asynchronous Background Tasks: Text Extraction (OCR), Search Chunks, Smart Categorization & Summarization
     (async () => {
-      for (let i = 0; i < filesToProcess.length; i++) {
-        const file = filesToProcess[i];
-        const saved = savedFiles.find((s) => s.original_name === file.originalname);
-        if (!saved || saved.extracted_text) continue;
+      for (const item of savedResults) {
+        const { fileRecord, file } = item;
         try {
-          const text = await extractDocumentText(file.buffer, file.mimetype, file.originalname);
-          if (text) {
-            await updateFileExtractedText(saved.id, text, "ready");
-            console.log(`[Background OCR Complete] Extracted ${text.length} chars for "${file.originalname}"`);
+          const buffer = file?.buffer || (await downloadFileBuffer(user.google_refresh_token, fileRecord.drive_file_id));
+          const isPdf = fileRecord.mime_type?.includes("pdf") || fileRecord.original_name.toLowerCase().endsWith(".pdf");
+
+          if (isPdf) {
+            // Per-page PDF extraction and classification pipeline
+            await processPdfPipeline(fileRecord, buffer, userId);
+          } else {
+            // Standard document / image extraction
+            const text = await extractDocumentText(buffer, fileRecord.mime_type, fileRecord.original_name, userId);
+            await updateFileExtractedText(fileRecord.id, userId, text || "", "ready");
+
+            if (!contextNote && text && text.trim().length > 50) {
+              try {
+                const aiResults = await categorizeFilesBulk(
+                  [{ index: 0, name: fileRecord.original_name, mimeType: fileRecord.mime_type, contentSnippet: text.slice(0, 500) }],
+                  null,
+                  existingFolders,
+                  userId
+                );
+                const resFolder = aiResults?.[0];
+                const suggested = resFolder?.suggestedNewFolder?.trim() || resFolder?.chosenExistingFolder?.trim();
+                if (suggested && suggested.toLowerCase() !== "others" && suggested.toLowerCase() !== (fileRecord.ai_result_folder || "").toLowerCase()) {
+                  await query("UPDATE files SET ai_result_folder = $1 WHERE id = $2 AND user_id = $3", [suggested, fileRecord.id, userId]);
+                }
+              } catch (catErr) {
+                console.warn(`[Background Categorization Warning] "${fileRecord.original_name}":`, catErr.message);
+              }
+            }
+
+            if (text && text.trim().length > 0) {
+              await processFileSummary(fileRecord.id, userId);
+            }
           }
-        } catch (ocrErr) {
-          console.warn(`[OCR Error] Background extraction failed for "${file.originalname}":`, ocrErr.message);
+          console.log(`[Background Processing Complete] Finished indexing & summary for "${fileRecord.original_name}"`);
+        } catch (procErr) {
+          console.error(`[Background Processing Error] "${fileRecord.original_name}":`, procErr.message);
+          await updateFileExtractedText(fileRecord.id, userId, "", "failed").catch(() => {});
         }
       }
     })();
@@ -272,6 +267,25 @@ router.get("/", requireAuth, async (req, res) => {
   } catch (error) {
     console.error("Error fetching files:", error);
     res.status(500).json({ error: "Failed to fetch files." });
+  }
+});
+
+// Get a single file by ID (with lazy backfill for search chunks & summary queue)
+router.get("/:id", requireAuth, async (req, res) => {
+  try {
+    const file = await getFileRecord(req.user.id, req.params.id);
+    if (!file) return res.status(404).json({ error: "File not found" });
+
+    if (file.extracted_text) {
+      lazyBackfillFile(file, req.user.id).catch((err) =>
+        console.warn(`[Lazy Backfill Error for ${file.id}]:`, err.message)
+      );
+    }
+
+    return res.status(200).json(file);
+  } catch (error) {
+    console.error("Error fetching file:", error);
+    return res.status(500).json({ error: "Failed to fetch file." });
   }
 });
 
@@ -372,8 +386,9 @@ router.post("/:id/ocr", requireAuth, async (req, res) => {
       return res.status(401).json({ error: "Google authentication required" });
     }
 
-    // If text already exists and is substantive (not force-refreshed, and not boilerplate like "-- 1 of 1 --")
-    if (fileRecord.extracted_text && !force && fileRecord.extracted_text.trim().length > 35) {
+    // If text already exists and is substantive and not force-refreshed
+    if (fileRecord.extracted_text && !force && fileRecord.extracted_text.trim().length > 35 && fileRecord.ocr_status === "done") {
+      lazyBackfillFile(fileRecord, userId).catch(() => {});
       return res.status(200).json({
         success: true,
         file: fileRecord,
@@ -381,15 +396,39 @@ router.post("/:id/ocr", requireAuth, async (req, res) => {
       });
     }
 
-    // Download buffer from Google Drive & extract via ocrService
-    const buffer = await downloadFileBuffer(user.google_refresh_token, fileRecord.drive_file_id);
-    let text = await extractDocumentText(buffer, fileRecord.mime_type, fileRecord.original_name);
+    const isPdf = fileRecord.mime_type?.includes("pdf") || fileRecord.original_name.toLowerCase().endsWith(".pdf");
 
+    if (isPdf) {
+      await query(
+        `UPDATE files
+         SET ocr_status = 'pending', ocr_note = NULL, updated_at = NOW()
+         WHERE id = $1 AND user_id = $2`,
+        [fileId, userId]
+      );
+
+      // Trigger background worker asynchronously without blocking the HTTP request
+      processNextPendingOcrJob().catch((err) =>
+        console.warn(`[Async OCR Trigger Error for ${fileId}]:`, err.message)
+      );
+
+      const updated = await getFileRecord(userId, fileId);
+      return res.status(202).json({
+        success: true,
+        message: "OCR processing started in background",
+        file: updated,
+      });
+    }
+
+    // Only download buffer for non-PDFs (images, text) which process synchronously
+    const buffer = await downloadFileBuffer(user.google_refresh_token, fileRecord.drive_file_id);
+
+    let text = await extractDocumentText(buffer, fileRecord.mime_type, fileRecord.original_name, userId);
     if (!text || text.trim().length === 0) {
       text = "No readable text detected in this document.";
     }
 
-    const updated = await updateFileExtractedText(fileRecord.id, text, "ready");
+    const updated = await updateFileExtractedText(fileRecord.id, userId, text, "ready");
+    lazyBackfillFile(updated, userId).catch(() => {});
     return res.status(200).json({
       success: true,
       file: updated,
@@ -398,6 +437,23 @@ router.post("/:id/ocr", requireAuth, async (req, res) => {
   } catch (err) {
     console.error("On-demand OCR error:", err);
     return res.status(500).json({ error: err.message || "Failed to extract text from document" });
+  }
+});
+
+// Get individual page breakdown for a file
+router.get("/:id/pages", requireAuth, async (req, res) => {
+  try {
+    const pagesRes = await query(
+      `SELECT id, page_number, text, visual_description, source, status, created_at, updated_at
+       FROM file_pages
+       WHERE file_id = $1 AND user_id = $2
+       ORDER BY page_number ASC`,
+      [req.params.id, req.user.id]
+    );
+    res.json(pagesRes.rows);
+  } catch (err) {
+    console.error("Error fetching file pages:", err);
+    res.status(500).json({ error: "Failed to fetch file pages" });
   }
 });
 

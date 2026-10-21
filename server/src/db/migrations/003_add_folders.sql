@@ -1,1 +1,1 @@
-ALTER TABLE files ADD COLUMN ai_result_folder VARCHAR(255);     
+ALTER TABLE files ADD COLUMN IF NOT EXISTS ai_result_folder VARCHAR(255);

@@ -1,16 +1,33 @@
 import {google} from "googleapis"
 import {Readable} from "stream"
 
-// creates an authenticated GDrive client for a specific user using theit stored refresh token
-export function getDriveClient(refreshToken){
-    const auth = new google.auth.OAuth2(
-        process.env.GOOGLE_CLIENT_ID,
-        process.env.GOOGLE_CLIENT_SECRET,
-        process.env.GOOGLE_REDIRECT_URI
-    )
+// Cache authenticated clients by refresh token to reuse access tokens and prevent refresh storms
+const clientCache = new Map();
 
-    auth.setCredentials({refresh_token: refreshToken})
-    return google.drive({version: "v3", auth});
+/**
+ * Creates or retrieves an authenticated GDrive client for a specific user using their stored refresh token.
+ * Caches the client to ensure google-auth-library reuses active access tokens across concurrent calls.
+ */
+export function getDriveClient(refreshToken) {
+  if (!refreshToken) {
+    throw new Error("Missing Google OAuth refresh token for Drive operations.");
+  }
+
+  if (clientCache.has(refreshToken)) {
+    return clientCache.get(refreshToken);
+  }
+
+  const auth = new google.auth.OAuth2(
+    process.env.GOOGLE_CLIENT_ID,
+    process.env.GOOGLE_CLIENT_SECRET,
+    process.env.GOOGLE_REDIRECT_URI
+  );
+
+  auth.setCredentials({ refresh_token: refreshToken });
+  const client = google.drive({ version: "v3", auth });
+  clientCache.set(refreshToken, client);
+
+  return client;
 }
 
 // uploads a file to users google drive

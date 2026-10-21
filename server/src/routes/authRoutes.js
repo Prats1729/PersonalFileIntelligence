@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { Router } from "express";
 import {
   getGoogleAuthUrl,
@@ -7,16 +8,24 @@ import {
 import { requireAuth } from "../middleware/authMiddleware.js";
 import { authLimiter } from "../middleware/rateLimiter.js";
 import { query } from "../db/index.js";
+import { env } from "../config/env.js";
 
 const router = Router();
 router.use(authLimiter);
 
 /**
  * 1. Start Google Login Flow
- * Redirects the user's browser to Google's OAuth consent page
+ * Redirects the user's browser to Google's OAuth consent page with CSRF state
  */
 router.get("/google", (req, res) => {
-  const url = getGoogleAuthUrl();
+  const state = randomBytes(32).toString("hex");
+  res.cookie("oauth_state", state, {
+    httpOnly: true,
+    secure: env.isProduction,
+    sameSite: "lax",
+    maxAge: 10 * 60 * 1000, // 10 minutes
+  });
+  const url = getGoogleAuthUrl(state);
   res.redirect(url);
 });
 
@@ -43,11 +52,25 @@ if (process.env.NODE_ENV !== "production") {
 
 /**
  * 2. Google OAuth Callback
- * Google redirects back here with a one-time 'code' in the query parameters
+ * Google redirects back here with a one-time 'code' and 'state' in query params
  */
 router.get("/google/callback", async (req, res) => {
-  const { code, error } = req.query;
+  const { code, state, error } = req.query;
   const clientUrl = process.env.CLIENT_URL || "http://localhost:5173";
+  const storedState = req.cookies.oauth_state;
+
+  // Clear state cookie immediately after retrieval
+  res.clearCookie("oauth_state", {
+    httpOnly: true,
+    secure: env.isProduction,
+    sameSite: "lax",
+  });
+
+  // Verify OAuth state token to protect against Login CSRF
+  if (!state || !storedState || state !== storedState) {
+    console.warn("⚠️ OAuth state mismatch or missing CSRF token");
+    return res.redirect(`${clientUrl}?auth_error=invalid_state`);
+  }
 
   // If user clicked "Cancel" on Google's consent screen
   if (error || !code) {
@@ -67,7 +90,7 @@ router.get("/google/callback", async (req, res) => {
     // Set the token inside a secure, HTTP-only cookie
     res.cookie("session_token", token, {
       httpOnly: true, // Prevents client-side JS from reading the cookie (protects from XSS)
-      secure: process.env.NODE_ENV === "production", // True in HTTPS production, false in local HTTP development
+      secure: env.isProduction, // True in HTTPS production, false in local HTTP development
       sameSite: "lax", // Protects against CSRF while allowing navigation from Google
       maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days in milliseconds
     });
@@ -95,7 +118,7 @@ router.get("/me", requireAuth, async (req, res) => {
       console.warn("⚠️ Invalid user ID in session token:", userId);
       res.clearCookie("session_token", {
         httpOnly: true,
-        secure: process.env.NODE_ENV === "production",
+        secure: env.isProduction,
         sameSite: "lax",
       });
       return res.status(401).json({ error: "Invalid session. Please sign in again." });
@@ -109,7 +132,7 @@ router.get("/me", requireAuth, async (req, res) => {
     if (result.rows.length === 0) {
       res.clearCookie("session_token", {
         httpOnly: true,
-        secure: process.env.NODE_ENV === "production",
+        secure: env.isProduction,
         sameSite: "lax",
       });
       return res.status(401).json({ error: "User session not found. Please sign in again." });
@@ -121,7 +144,7 @@ router.get("/me", requireAuth, async (req, res) => {
     if (err.message?.includes("invalid input syntax for type uuid")) {
       res.clearCookie("session_token", {
         httpOnly: true,
-        secure: process.env.NODE_ENV === "production",
+        secure: env.isProduction,
         sameSite: "lax",
       });
       return res.status(401).json({ error: "Session corrupted. Please sign in again." });
@@ -137,7 +160,7 @@ router.get("/me", requireAuth, async (req, res) => {
 router.post("/logout", (req, res) => {
   res.clearCookie("session_token", {
     httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
+    secure: env.isProduction,
     sameSite: "lax",
   });
   res.json({ message: "Logged out successfully" });

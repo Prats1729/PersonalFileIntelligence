@@ -11,8 +11,10 @@ export function requireAuth(req, res, next) {
   }
 
   try {
-    // 2. Cryptographically verify the token with our secret
-    const decoded = jwt.verify(token, process.env.SESSION_SECRET);
+    // 2. Cryptographically verify the token with explicit algorithm constraint
+    const decoded = jwt.verify(token, process.env.SESSION_SECRET, {
+      algorithms: ["HS256"],
+    });
 
     // 3. Attach the authenticated user ID to the request object
     req.user = { id: decoded.userId };

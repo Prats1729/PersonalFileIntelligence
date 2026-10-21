@@ -121,6 +121,8 @@ export const runSync = async () => {
   }
 };
 
+let syncTask = null;
+
 /**
  * Initialize background cron job (Every 5 minutes)
  */
@@ -131,5 +133,17 @@ export const startSyncJob = () => {
   setTimeout(runSync, 5000);
 
   // Then schedule every 5 minutes
-  cron.schedule("*/5 * * * *", runSync);
+  syncTask = cron.schedule("*/5 * * * *", runSync);
 };
+
+/**
+ * Stop background cron job gracefully on server shutdown
+ */
+export const stopSyncJob = () => {
+  if (syncTask) {
+    console.log("Stopping background sync cron task...");
+    syncTask.stop();
+    syncTask = null;
+  }
+};
+

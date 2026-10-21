@@ -19,7 +19,9 @@ import {
   Download,
   ArrowRight,
   BookOpen,
-  Code2
+  Code2,
+  Key,
+  AlertCircle
 } from "lucide-react";
 import toast from "react-hot-toast";
 import { API_BASE } from "../config";
@@ -31,6 +33,20 @@ const COMMAND_CHIPS = [
   { prefix: "/formulas", label: "Formulas", icon: Code2, desc: "Extract key formulas, theorems & algorithms" },
   { prefix: "/flashcards", label: "Flashcards", icon: Zap, desc: "Generate 4 flashcard study pairs" },
 ];
+
+/**
+ * Pure helper to parse <thinking>...</thinking> tags from message content.
+ */
+function parseMessageContent(text = "") {
+  const thinkingMatch = text.match(/<thinking>([\s\S]*?)<\/thinking>/i);
+  let thinking = null;
+  let body = text;
+  if (thinkingMatch) {
+    thinking = thinkingMatch[1].trim();
+    body = text.replace(/<thinking>[\s\S]*?<\/thinking>/i, "").trim();
+  }
+  return { thinking, body };
+}
 
 export default function Chat({
   user,
@@ -45,6 +61,7 @@ export default function Chat({
   onNewChat,
   onClose,
   onUpdateFileNote,
+  onOpenSettings,
 }) {
   const [input, setInput] = useState("");
   const [chatId, setChatId] = useState(activeChatId || null);
@@ -171,17 +188,6 @@ export default function Chat({
     }
   }, [activeChatId]);
 
-  // Helper to parse <thinking>...</thinking> tags from message
-  const parseMessageContent = (text = "") => {
-    const thinkingMatch = text.match(/<thinking>([\s\S]*?)<\/thinking>/i);
-    let thinking = null;
-    let body = text;
-    if (thinkingMatch) {
-      thinking = thinkingMatch[1].trim();
-      body = text.replace(/<thinking>[\s\S]*?<\/thinking>/i, "").trim();
-    }
-    return { thinking, body };
-  };
 
 
   // Handle Send
@@ -232,7 +238,28 @@ export default function Chat({
         }),
       });
 
-      if (!res.ok) throw new Error("Failed to get response from AI");
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        const isQuota = res.status === 429 || errData.code === "QUOTA_EXCEEDED";
+        if (isQuota) {
+          toast.error("Daily free AI limit reached (30/30 calls). Add your own API key in Settings for unlimited use.", {
+            duration: 6000,
+          });
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: `err-${Date.now()}`,
+              role: "assistant",
+              isQuotaError: true,
+              content:
+                "⚠️ **Daily free AI limit reached.** You have used all 30 free calls for today.\n\nAdd your own OpenRouter or Google Gemini API key in Settings for unlimited academic intelligence, document Q&A, and study notes.",
+              created_at: new Date().toISOString(),
+            },
+          ]);
+          return;
+        }
+        throw new Error(errData.error || "Failed to get response from AI");
+      }
 
       const data = await res.json();
       const parsed = parseMessageContent(data.content);
@@ -255,13 +282,13 @@ export default function Chat({
       }
     } catch (err) {
       console.error("Chat error:", err);
-      toast.error("AI service error. Check connection or OpenRouter key.");
+      toast.error(err.message || "AI service error. Check connection or OpenRouter key.");
       setMessages((prev) => [
         ...prev,
         {
           id: `err-${Date.now()}`,
           role: "assistant",
-          content: "Encountered an issue communicating with the AI model. Please verify your connection or try again.",
+          content: err.message || "Encountered an issue communicating with the AI model. Please verify your connection or try again.",
           created_at: new Date().toISOString(),
         },
       ]);
@@ -341,6 +368,33 @@ export default function Chat({
   // Render Rich Assistant Content with Callouts & Code/Formula blocks
   const renderRichAssistantContent = (msg, msgIdx) => {
     const rawText = msg.cleanContent || msg.content || "";
+
+    if (msg.isQuotaError) {
+      return (
+        <div className="p-3 bg-amber-950/20 border border-amber-900/40 rounded-lg space-y-2.5">
+          <div className="flex items-start gap-2 text-xs text-amber-300">
+            <AlertCircle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+            <div className="space-y-1">
+              <span className="font-semibold block text-white">Daily Free Quota Reached</span>
+              <p className="text-[#94a3b8] leading-relaxed">
+                You've reached the free limit of 30 server AI calls for today. Connect your personal API key to unlock unlimited requests.
+              </p>
+            </div>
+          </div>
+          {onOpenSettings && (
+            <div className="pt-2 border-t border-amber-900/30 flex justify-end">
+              <button
+                onClick={onOpenSettings}
+                className="px-3 py-1.5 rounded bg-[#38bdf8] hover:bg-[#7bd0ff] text-[#00354a] font-semibold text-xs flex items-center gap-1.5 transition-colors shadow-sm"
+              >
+                <Key className="w-3.5 h-3.5" />
+                <span>Configure Keys in Settings</span>
+              </button>
+            </div>
+          )}
+        </div>
+      );
+    }
 
     // Extract pinned note callout if present
     const noteMatch = rawText.match(/> 📌 \*\*Pinned Context Match:\*\* "([\s\S]*?)"/i);

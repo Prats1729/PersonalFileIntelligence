@@ -1,32 +1,23 @@
 import React, { useState, useEffect, useRef } from "react";
 import { Toaster, toast } from "react-hot-toast";
 import Chat from "./Chat";
+import SettingsModal from "./SettingsModal";
 import { API_BASE } from "../config";
 import {
-  HardDrive,
   Search,
   LogOut,
   Upload,
   FileText,
-  Image as ImageIcon,
   Folder,
-  Tag,
-  Clock,
-  ExternalLink,
   Plus,
   CheckCircle2,
-  FileCode,
-  Trash,
   ArrowLeft,
   MessageSquare,
   MoreHorizontal,
   SlidersHorizontal,
   Grid,
   List,
-  Check,
   Copy,
-  Share2,
-  Cloud,
   Star,
   Settings,
   ChevronRight,
@@ -34,14 +25,16 @@ import {
   Pin,
   Info,
   X,
-  FileDown,
-  Menu,
   Keyboard,
   RefreshCw,
   Edit3,
-  Zap,
   Sparkles,
-  AlertCircle
+  AlertCircle,
+  Menu,
+  Trash,
+  ExternalLink,
+  Share2,
+  Loader2
 } from "lucide-react";
 
 export default function Workspace({ user, onLogout, isLoggingOut }) {
@@ -87,7 +80,8 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
   const [isEditingNote, setIsEditingNote] = useState(false);
   const [editingNoteText, setEditingNoteText] = useState("");
 
-  // Shortcuts Modal
+  // Settings & Shortcuts Modal
+  const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
   const [showShortcutsModal, setShowShortcutsModal] = useState(false);
 
   // Chat History
@@ -184,6 +178,18 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
     fetchChats();
   }, []);
 
+  // Auto-refresh when files are processing in the background
+  useEffect(() => {
+    const hasProcessing = files.some((f) => f.status === "processing");
+    if (!hasProcessing) return;
+
+    const interval = setInterval(() => {
+      fetchFiles();
+    }, 3500);
+
+    return () => clearInterval(interval);
+  }, [files]);
+
   // 2. Keyboard Shortcuts Listener
   useEffect(() => {
     const handleKeyDown = (e) => {
@@ -214,12 +220,20 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
           }
         }
       }
+      // Cmd+, or Ctrl+, opens Settings
+      if ((e.metaKey || e.ctrlKey) && e.key === ",") {
+        e.preventDefault();
+        setIsSettingsModalOpen(true);
+        return;
+      }
       // Escape clears selections or closes modals
       if (e.key === "Escape") {
         if (isUploadModalOpen) {
           setIsUploadModalOpen(false);
           setUploadFiles([]);
           setUploadNote("");
+        } else if (isSettingsModalOpen) {
+          setIsSettingsModalOpen(false);
         } else if (showShortcutsModal) {
           setShowShortcutsModal(false);
         } else if (currentFolder) {
@@ -232,7 +246,7 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isUploadModalOpen, showShortcutsModal, currentFolder, selectedIds, files]);
+  }, [isUploadModalOpen, isSettingsModalOpen, showShortcutsModal, currentFolder, selectedIds, files]);
 
   // 3. Popstate handling
   useEffect(() => {
@@ -466,7 +480,7 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
       } else if (countSkipped > 0 && countUploaded === 0) {
         toast(`All ${countSkipped} file(s) already in library (skipped duplicates)`);
       } else if (countUploaded > 0) {
-        toast.success(`${countUploaded} file(s) uploaded and categorized!`);
+        toast.success(`${countUploaded} file(s) uploaded successfully!`);
       }
       if (countFailed > 0) {
         toast.error(`${countFailed} file(s) failed. Retry available in Upload Manager.`);
@@ -484,6 +498,11 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
       setIsUploading(false);
       setProcessingCount(0);
     }
+  };
+
+  // Dismiss individual failed/completed item from Upload Manager widget
+  const handleDismissUploadItem = (itemId) => {
+    setUploadQueue((prev) => prev.filter((item) => item.id !== itemId));
   };
 
   // Retry individual failed file from Upload Manager widget
@@ -686,6 +705,14 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
       });
       if (!res.ok) throw new Error("OCR extraction failed");
       const data = await res.json();
+      if (res.status === 202) {
+        toast.success("OCR started in background! Tracking progress...", { id: ocrToast });
+        setFiles((prev) =>
+          prev.map((f) => (f.id === fileId ? { ...f, ocr_status: "processing", status: "processing" } : f))
+        );
+        if (typeof fetchFiles === "function") fetchFiles();
+        return;
+      }
       const extracted = data.extractedText || "";
       setFiles((prev) =>
         prev.map((f) => (f.id === fileId ? { ...f, extracted_text: extracted, status: "ready" } : f))
@@ -1137,7 +1164,7 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
           {/* Bottom Settings Button */}
           <div className="mt-auto p-2 border-t border-[#232732]">
             <button
-              onClick={() => setShowShortcutsModal(true)}
+              onClick={() => setIsSettingsModalOpen(true)}
               className="w-full flex items-center justify-between px-2.5 py-1.5 rounded text-xs text-[#94a3b8] hover:bg-[#181b22] hover:text-white transition-colors"
             >
               <div className="flex items-center gap-2">
@@ -1456,10 +1483,20 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
                           )}
                         </td>
                         <td className="pr-2">
-                          {file.status === "processing" ? (
-                            <span className="inline-flex items-center gap-1.5 text-[11px] text-[#38bdf8] bg-[#38bdf8]/10 border border-[#38bdf8]/30 px-1.5 py-0.5 rounded font-mono">
-                              <span className="w-1.5 h-1.5 rounded-full bg-[#38bdf8] animate-ping"></span>
-                              Processing
+                          {file.status === "processing" || file.ocr_status === "processing" ? (
+                            <span className="inline-flex items-center gap-1.5 text-[11px] text-[#38bdf8] bg-[#38bdf8]/10 border border-[#38bdf8]/30 px-1.5 py-0.5 rounded font-mono" title={file.pages_total ? `OCR ${file.pages_done || 0}/${file.pages_total}` : "Processing"}>
+                              <Loader2 className="w-2.5 h-2.5 animate-spin" />
+                              {file.pages_total ? `OCR ${file.pages_done || 0}/${file.pages_total}` : "Processing"}
+                            </span>
+                          ) : file.ocr_status === "partial" ? (
+                            <span className="inline-flex items-center gap-1.5 text-[11px] text-amber-400 bg-amber-400/10 border border-amber-400/30 px-1.5 py-0.5 rounded font-mono" title={file.ocr_note || "Partial OCR"}>
+                              <span className="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
+                              Partial ({file.pages_done || 0}/{file.pages_total || "?"})
+                            </span>
+                          ) : file.status === "failed" || file.ocr_status === "failed" ? (
+                            <span className="inline-flex items-center gap-1.5 text-[11px] text-rose-400 bg-rose-400/10 border border-rose-400/30 px-1.5 py-0.5 rounded font-mono">
+                              <span className="w-1.5 h-1.5 rounded-full bg-rose-400"></span>
+                              Failed
                             </span>
                           ) : (
                             <span className="inline-flex items-center gap-1.5 text-[11px] text-[#14b8a6] bg-[#14b8a6]/10 border border-[#14b8a6]/30 px-1.5 py-0.5 rounded font-mono">
@@ -1702,10 +1739,26 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
                             <Star className={`w-3.5 h-3.5 ${selectedFile.is_favorite ? "fill-amber-400 text-amber-400" : ""}`} />
                           </button>
                         </div>
-                        <div className="mt-1 flex items-center gap-1.5">
-                          <span className="text-[10px] font-mono px-1.5 py-0.2 bg-[#14b8a6]/10 border border-[#14b8a6]/30 text-[#14b8a6] rounded">
-                            Indexed &amp; Searchable
-                          </span>
+                        <div className="mt-1 flex items-center gap-1.5 flex-wrap">
+                          {selectedFile.status === "processing" || selectedFile.ocr_status === "processing" ? (
+                            <span className="text-[10px] font-mono px-1.5 py-0.5 bg-blue-500/10 border border-blue-500/30 text-blue-400 rounded flex items-center gap-1">
+                              <Loader2 className="w-2.5 h-2.5 animate-spin" />
+                              {selectedFile.pages_total ? `OCR ${selectedFile.pages_done || 0}/${selectedFile.pages_total}` : "Processing OCR & Chunks"}
+                            </span>
+                          ) : selectedFile.ocr_status === "partial" ? (
+                            <span className="text-[10px] font-mono px-1.5 py-0.5 bg-amber-500/10 border border-amber-500/30 text-amber-400 rounded flex items-center gap-1" title={selectedFile.ocr_note || "OCR capped at max pages"}>
+                              <AlertCircle className="w-2.5 h-2.5" />
+                              Partial OCR ({selectedFile.pages_done || 0}/{selectedFile.pages_total || "?"})
+                            </span>
+                          ) : selectedFile.status === "failed" || selectedFile.ocr_status === "failed" ? (
+                            <span className="text-[10px] font-mono px-1.5 py-0.5 bg-rose-500/10 border border-rose-500/30 text-rose-400 rounded">
+                              OCR Extraction Failed
+                            </span>
+                          ) : (
+                            <span className="text-[10px] font-mono px-1.5 py-0.5 bg-[#14b8a6]/10 border border-[#14b8a6]/30 text-[#14b8a6] rounded">
+                              Indexed &amp; Searchable
+                            </span>
+                          )}
                         </div>
                         <p className="font-mono text-[10px] text-[#64748b] mt-1 truncate">
                           Drive ID: {selectedFile.drive_file_id}
@@ -1798,9 +1851,21 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
                         )}
                       </div>
 
+                      {selectedFile.ocr_note && (
+                        <div className="p-2 mb-1.5 bg-amber-500/10 border border-amber-500/30 rounded text-amber-400 text-[10px] font-mono flex items-center gap-1.5 leading-tight">
+                          <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                          <span>{selectedFile.ocr_note}</span>
+                        </div>
+                      )}
+
                       {selectedFile.extracted_text ? (
                         <div className="p-2.5 bg-[#0d0e11] border border-[#232732] rounded font-mono text-[11px] text-[#bdc8d1] leading-relaxed max-h-48 overflow-y-auto custom-scrollbar select-text whitespace-pre-wrap">
                           {selectedFile.extracted_text}
+                        </div>
+                      ) : selectedFile.status === "processing" || selectedFile.ocr_status === "processing" ? (
+                        <div className="p-4 bg-[#0d0e11] border border-dashed border-[#232732] rounded font-mono text-[11px] text-blue-400 flex flex-col items-center justify-center gap-2 text-center">
+                          <Loader2 className="w-4 h-4 animate-spin text-blue-400" />
+                          <span>{selectedFile.pages_total ? `Processing OCR (${selectedFile.pages_done || 0}/${selectedFile.pages_total} pages)...` : "Extracting text layer and chunks in background..."}</span>
                         </div>
                       ) : (
                         <div className="p-4 bg-[#0d0e11] border border-dashed border-[#232732] rounded font-mono text-[11px] text-[#64748b] flex flex-col items-center justify-center gap-2.5 text-center">
@@ -1967,6 +2032,7 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
                     setActiveChatId(null);
                   }}
                   onClose={() => setIsInspectorOpen(false)}
+                  onOpenSettings={() => setIsSettingsModalOpen(true)}
                   onUpdateFileNote={async (fileId, newNote) => {
                     try {
                       const res = await fetch(`${API_BASE}/api/files/${fileId}/note`, {
@@ -2115,7 +2181,13 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
         </div>
       )}
 
-      {/* Keyboard Shortcuts Modal */}
+      {/* Settings & AI Keys Modal */}
+      <SettingsModal
+        isOpen={isSettingsModalOpen}
+        onClose={() => setIsSettingsModalOpen(false)}
+      />
+
+      {/* Keyboard Shortcuts Modal (Legacy Fallback) */}
       {showShortcutsModal && (
         <div className="absolute inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4 animate-fadeIn">
           <div className="bg-[#12141a] rounded-xl w-[420px] border border-[#232732] shadow-2xl overflow-hidden">
@@ -2128,6 +2200,7 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
             <div className="p-4 flex flex-col gap-2.5 text-xs">
               {[
                 { key: "⌘K or /", desc: "Focus file search" },
+                { key: "⌘,", desc: "Open Settings & AI Keys" },
                 { key: "Space", desc: "Quick preview / open in Google Drive" },
                 { key: "I", desc: "Toggle right Inspector pane" },
                 { key: "Ctrl + Click", desc: "Multi-select documents or folders" },
@@ -2224,9 +2297,9 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
                           }
                         >
                           {item.status === "uploading"
-                            ? "Uploading & categorizing..."
+                            ? "Uploading for processing..."
                             : item.status === "done"
-                            ? "Complete"
+                            ? "Ready for processing!"
                             : item.status === "skipped"
                             ? "Skipped (Duplicate)"
                             : "Failed"}
@@ -2236,14 +2309,23 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
                   </div>
 
                   {item.status === "failed" && (
-                    <button
-                      onClick={() => handleRetryUploadItem(item)}
-                      className="px-2 py-0.5 bg-red-500/20 hover:bg-red-500/30 text-red-300 border border-red-500/40 rounded text-[10px] flex items-center gap-1 transition-colors shrink-0"
-                      title="Retry upload"
-                    >
-                      <RefreshCw className="w-2.5 h-2.5" />
-                      Retry
-                    </button>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <button
+                        onClick={() => handleRetryUploadItem(item)}
+                        className="px-2 py-0.5 bg-red-500/20 hover:bg-red-500/30 text-red-300 border border-red-500/40 rounded text-[10px] flex items-center gap-1 transition-colors"
+                        title="Retry upload"
+                      >
+                        <RefreshCw className="w-2.5 h-2.5" />
+                        Retry
+                      </button>
+                      <button
+                        onClick={() => handleDismissUploadItem(item.id)}
+                        className="p-1 hover:bg-[#232732] rounded text-[#64748b] hover:text-red-400 transition-colors"
+                        title="Dismiss / Cancel"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </div>
                   )}
                 </div>
               ))}

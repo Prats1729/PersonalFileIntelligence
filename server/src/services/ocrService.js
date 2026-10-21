@@ -1,21 +1,36 @@
 import { PDFParse } from "pdf-parse";
-
-const MAX_TEXT_CHARS = 50000; // Cap to ~25 pages of dense text
+import { env } from "../config/env.js";
+import { getActiveKeyForUser } from "./keyService.js";
 
 /**
- * Tier 1: Local digital PDF text extraction (< 30ms)
+ * Tier 1: Local digital PDF text extraction (< 30ms) with configurable timeout & limits
  */
 async function extractFromDigitalPdf(buffer) {
   try {
-    const parser = new PDFParse({ data: buffer });
-    const result = await parser.getText();
-    await parser.destroy();
-    return (result?.text || "").trim();
-  } catch (err) {
-    console.warn(
-      "⚠️ Tier 1 (pdf-parse) failed:",
-      err.message,
+    const parsePromise = (async () => {
+      const parser = new PDFParse({ data: buffer });
+      // Extract up to configured page limit (default: 100)
+      const result = await parser.getText({ first: env.MAX_PDF_PAGES });
+      await parser.destroy();
+      return (result?.text || "").trim();
+    })();
+
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(
+        () =>
+          reject(
+            new Error(
+              `PDF text extraction timed out after ${env.PDF_PARSE_TIMEOUT_MS}ms`
+            )
+          ),
+        env.PDF_PARSE_TIMEOUT_MS
+      )
     );
+
+    const text = await Promise.race([parsePromise, timeoutPromise]);
+    return text.slice(0, env.MAX_EXTRACT_CHARS);
+  } catch (err) {
+    console.warn("⚠️ Tier 1 (pdf-parse) failed:", err.message);
     return "";
   }
 }
@@ -23,14 +38,23 @@ async function extractFromDigitalPdf(buffer) {
 /**
  * Tier 2A: OpenRouter Vision OCR (Fast, robust gpt-4o-mini endpoint)
  */
-async function extractWithOpenRouterVision(buffer, mimeType) {
-  const apiKey = process.env.OPENROUTER_API_KEY;
+export async function extractWithOpenRouterVision(buffer, mimeType, userId = null, customPrompt = null) {
+  let apiKey = process.env.OPENROUTER_API_KEY;
+  if (userId) {
+    try {
+      const active = await getActiveKeyForUser(userId, "openrouter");
+      if (active.key) apiKey = active.key;
+    } catch (_) {}
+  }
   if (!apiKey) return "";
 
   try {
     const base64Data = buffer.toString("base64");
     const mime = mimeType || "image/jpeg";
     const dataUrl = `data:${mime};base64,${base64Data}`;
+    const promptText =
+      customPrompt ||
+      "Transcribe all readable text, headings, numbers, and notes from this image accurately. Output only the transcribed text without conversational commentary.";
 
     const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
@@ -46,7 +70,7 @@ async function extractWithOpenRouterVision(buffer, mimeType) {
             content: [
               {
                 type: "text",
-                text: "Transcribe all readable text, headings, numbers, and notes from this image accurately. Output only the transcribed text without conversational commentary.",
+                text: promptText,
               },
               {
                 type: "image_url",
@@ -56,7 +80,7 @@ async function extractWithOpenRouterVision(buffer, mimeType) {
           },
         ],
       }),
-      signal: AbortSignal.timeout(15000),
+      signal: AbortSignal.timeout(env.OCR_PAGE_TIMEOUT_MS || 15000),
     });
 
     if (!res.ok) {
@@ -79,7 +103,7 @@ async function extractWithOpenRouterVision(buffer, mimeType) {
 function isBoilerplateScannerText(text) {
   if (!text) return true;
   const trimmed = text.trim();
-  if (trimmed.length < 35 && (/^(--\s*\d+\s*of\s*\d+\s*--|page\s*\d+(\s*of\s*\d+)?|\d+\s*\/\s*\d+)$/i.test(trimmed) || trimmed.length < 15)) {
+  if (trimmed.length < 35 && (/^(--\s*\d+\s*(of|\/)\s*\d+\s*--|page\s*\d+(\s*(of|\/)\s*\d+)?|\d+\s*\/\s*\d+)$/i.test(trimmed) || trimmed.length < 15)) {
     return true;
   }
   return false;
@@ -88,8 +112,14 @@ function isBoilerplateScannerText(text) {
 /**
  * Tier 2B: Google Gemini Vision OCR (with model fallback for high-demand spikes)
  */
-async function extractWithGeminiVision(buffer, mimeType) {
-  const apiKey = process.env.GEMINI_API_KEY;
+export async function extractWithGeminiVision(buffer, mimeType, userId = null, customPrompt = null) {
+  let apiKey = process.env.GEMINI_API_KEY;
+  if (userId) {
+    try {
+      const active = await getActiveKeyForUser(userId, "gemini");
+      if (active.key) apiKey = active.key;
+    } catch (_) {}
+  }
   if (!apiKey) {
     console.warn("⚠️ No GEMINI_API_KEY configured for Vision OCR.");
     return "";
@@ -101,6 +131,9 @@ async function extractWithGeminiVision(buffer, mimeType) {
     "gemini-flash-lite-latest",
   ];
   const base64Data = buffer.toString("base64");
+  const promptText =
+    customPrompt ||
+    "Transcribe all readable text, exam questions, headings, formulas, and notes from this document accurately. Output only the transcribed text without extra commentary.";
 
   for (const model of candidateModels) {
     try {
@@ -113,7 +146,7 @@ async function extractWithGeminiVision(buffer, mimeType) {
             {
               parts: [
                 {
-                  text: "Transcribe all readable text, exam questions, headings, formulas, and notes from this document accurately. Output only the transcribed text without extra commentary.",
+                  text: promptText,
                 },
                 {
                   inline_data: {
@@ -125,7 +158,7 @@ async function extractWithGeminiVision(buffer, mimeType) {
             },
           ],
         }),
-        signal: AbortSignal.timeout(15000),
+        signal: AbortSignal.timeout(env.OCR_PAGE_TIMEOUT_MS || 15000),
       });
 
       if (!response.ok) {
@@ -153,6 +186,7 @@ export async function extractDocumentText(
   buffer,
   mimeType = "",
   fileName = "",
+  userId = null,
 ) {
   if (!buffer || buffer.length === 0) return "";
 
@@ -169,35 +203,43 @@ export async function extractDocumentText(
     name.endsWith(".csv") ||
     name.endsWith(".md")
   ) {
-    return buffer.subarray(0, MAX_TEXT_CHARS).toString("utf-8").trim();
+    return buffer.subarray(0, env.MAX_EXTRACT_CHARS).toString("utf-8").trim();
   }
 
   // Case 2: PDF Document
   if (mime.includes("pdf") || name.endsWith(".pdf")) {
-    // Step A: Fast Tier 1 Local parse (< 30ms)
+    const { stripBoilerplateText, isGarbageTextLayer } = await import("./pdfPageClassifier.js");
     let text = await extractFromDigitalPdf(buffer);
+    const cleaned = stripBoilerplateText(text);
 
-    // If substantial digital text exists (not just scanner footer like "-- 1 of 1 --")
-    if (text && !isBoilerplateScannerText(text)) {
-      return text.slice(0, MAX_TEXT_CHARS);
+    // If substantial non-boilerplate digital text exists
+    if (cleaned && cleaned.replace(/[^a-zA-Z0-9]/g, "").length >= env.PDF_MIN_PAGE_CHARS && !isGarbageTextLayer(cleaned)) {
+      return cleaned.slice(0, env.MAX_EXTRACT_CHARS);
     }
 
-    // Step B: For scans or boilerplate-only PDFs, attempt Vision OCR
-    console.log(
-      `📄 Document "${fileName}" contains no substantial digital text layer. Invoking Vision OCR...`,
-    );
-    const visionText = await extractWithGeminiVision(buffer, "application/pdf");
-    return (visionText || text || "").slice(0, MAX_TEXT_CHARS);
+    // Otherwise fallback to Vision OCR on first page render
+    console.log(`📄 Document "${fileName}" contains no substantial digital text layer. Invoking Vision OCR...`);
+    try {
+      const { renderPdfPageToBuffer } = await import("./pdfRenderer.js");
+      const pagePng = await renderPdfPageToBuffer(buffer, 1);
+      const visionText =
+        (await extractWithOpenRouterVision(pagePng, "image/png", userId)) ||
+        (await extractWithGeminiVision(pagePng, "image/png", userId));
+      return (visionText || cleaned || text || "").slice(0, env.MAX_EXTRACT_CHARS);
+    } catch (renderErr) {
+      console.warn(`⚠️ PDF page rendering failed for "${fileName}":`, renderErr.message);
+      const fallbackVision = await extractWithGeminiVision(buffer, "application/pdf", userId);
+      return (fallbackVision || cleaned || text || "").slice(0, env.MAX_EXTRACT_CHARS);
+    }
   }
 
   // Case 3: Images (PNG, JPG, WebP)
   if (mime.includes("image") || name.match(/\.(png|jpg|jpeg|webp)$/)) {
-    // Try OpenRouter gpt-4o-mini vision first
-    let visionText = await extractWithOpenRouterVision(buffer, mime || "image/jpeg");
+    let visionText = await extractWithOpenRouterVision(buffer, mime || "image/jpeg", userId);
     if (!visionText) {
-      visionText = await extractWithGeminiVision(buffer, mime || "image/jpeg");
+      visionText = await extractWithGeminiVision(buffer, mime || "image/jpeg", userId);
     }
-    return (visionText || "").slice(0, MAX_TEXT_CHARS);
+    return (visionText || "").slice(0, env.MAX_EXTRACT_CHARS);
   }
 
   return "";
