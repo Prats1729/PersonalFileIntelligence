@@ -130,6 +130,7 @@ ${filesListStr}
         { role: "user", content: userPrompt },
       ],
       response_format: { type: "json_object" },
+      max_tokens: 1500,
     });
 
     const content = response.choices[0].message.content;
@@ -149,6 +150,67 @@ ${filesListStr}
   });
 }
 
+export async function callGeminiChat(messages, userId = null) {
+  let apiKey = env.GEMINI_API_KEY;
+  if (userId) {
+    try {
+      const active = await getActiveKeyForUser(userId, "gemini");
+      if (active.key) apiKey = active.key;
+    } catch (_) {}
+  }
+  if (!apiKey) {
+    throw new AppError("No Gemini API key available for fallback.", 500, "MISSING_GEMINI_KEY");
+  }
+
+  const contents = [];
+  let systemInstruction = "";
+
+  for (const m of messages) {
+    if (m.role === "system") {
+      systemInstruction += (systemInstruction ? "\n\n" : "") + m.content;
+    } else {
+      contents.push({
+        role: m.role === "assistant" ? "model" : "user",
+        parts: [{ text: m.content || "" }],
+      });
+    }
+  }
+
+  if (contents.length === 0 || contents[0].role !== "user") {
+    contents.unshift({ role: "user", parts: [{ text: "Hello" }] });
+  }
+
+  const payload = { contents };
+  if (systemInstruction) {
+    payload.systemInstruction = {
+      parts: [{ text: systemInstruction }],
+    };
+  }
+
+  const candidateModels = ["gemini-3.5-flash", "gemini-3-flash-preview"];
+  for (const model of candidateModels) {
+    try {
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+          signal: AbortSignal.timeout(25000),
+        }
+      );
+      if (!res.ok) continue;
+      const data = await res.json();
+      const reply = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+      if (reply) return reply;
+    } catch (err) {
+      console.warn(`[Gemini Chat Fallback ${model} error]:`, err.message);
+    }
+  }
+
+  throw new AppError("All Gemini fallback models failed.", 500, "GEMINI_FALLBACK_FAILED");
+}
+
 export async function chatWithAI(messages, userId = null) {
   const client = await resolveAiClient(userId, { enforceQuota: true, callCount: 1 });
 
@@ -165,13 +227,23 @@ export async function chatWithAI(messages, userId = null) {
     return m;
   });
 
-  return withRetry(async () => {
-    const response = await client.chat.completions.create({
-      model: "openrouter/auto",
-      messages: boundedMessages,
+  try {
+    return await withRetry(async () => {
+      const response = await client.chat.completions.create({
+        model: "openrouter/auto",
+        messages: boundedMessages,
+        max_tokens: 2048,
+      });
+      return response.choices[0].message.content;
     });
-    return response.choices[0].message.content;
-  });
+  } catch (err) {
+    // If OpenRouter has insufficient credits (402) or upstream fails, gracefully fall back to Gemini
+    if (err.status === 402 || err.message?.includes("402") || err.status >= 500) {
+      console.warn(`[OpenRouter Chat Fallback]: ${err.message}. Falling back to Google Gemini...`);
+      return await callGeminiChat(boundedMessages, userId);
+    }
+    throw err;
+  }
 }
 
 export async function generateChatTitle(firstMessage, userId = null) {
@@ -189,6 +261,7 @@ export async function generateChatTitle(firstMessage, userId = null) {
         },
         { role: "user", content: firstMessage },
       ],
+      max_tokens: 40,
     });
     return response.choices[0].message.content.trim();
   });

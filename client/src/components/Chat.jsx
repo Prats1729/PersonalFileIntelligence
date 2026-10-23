@@ -21,7 +21,10 @@ import {
   BookOpen,
   Code2,
   Key,
-  AlertCircle
+  AlertCircle,
+  AlertTriangle,
+  ExternalLink,
+  Clock,
 } from "lucide-react";
 import toast from "react-hot-toast";
 import { API_BASE } from "../config";
@@ -240,9 +243,12 @@ export default function Chat({
 
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
-        const isQuota = res.status === 429 || errData.code === "QUOTA_EXCEEDED";
-        if (isQuota) {
-          toast.error("Daily free AI limit reached (30/30 calls). Add your own API key in Settings for unlimited use.", {
+        const status = res.status;
+        const code = errData.code || "";
+        const errorDetail = errData.error || "Failed to get response from AI";
+
+        if (status === 429 || code === "QUOTA_EXCEEDED") {
+          toast.error("Daily free AI limit reached (30/30 calls). Add your own API key in Settings.", {
             duration: 6000,
           });
           setMessages((prev) => [
@@ -251,14 +257,62 @@ export default function Chat({
               id: `err-${Date.now()}`,
               role: "assistant",
               isQuotaError: true,
-              content:
-                "⚠️ **Daily free AI limit reached.** You have used all 30 free calls for today.\n\nAdd your own OpenRouter or Google Gemini API key in Settings for unlimited academic intelligence, document Q&A, and study notes.",
+              errorDetail,
               created_at: new Date().toISOString(),
             },
           ]);
           return;
         }
-        throw new Error(errData.error || "Failed to get response from AI");
+
+        if (status === 402 || code === "INSUFFICIENT_CREDITS") {
+          toast.error("AI Provider credits depleted. Top up OpenRouter or switch to free Gemini in Settings.", {
+            duration: 6000,
+          });
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: `err-${Date.now()}`,
+              role: "assistant",
+              isCreditError: true,
+              errorDetail,
+              created_at: new Date().toISOString(),
+            },
+          ]);
+          return;
+        }
+
+        if (status === 504 || code === "TIMEOUT") {
+          toast.error("AI request timed out. Try asking with fewer attached documents.", {
+            duration: 5000,
+          });
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: `err-${Date.now()}`,
+              role: "assistant",
+              isTimeoutError: true,
+              errorDetail,
+              created_at: new Date().toISOString(),
+            },
+          ]);
+          return;
+        }
+
+        // Generic / upstream server error
+        toast.error(`AI Error (${status}): ${errorDetail.slice(0, 80)}`, { duration: 5000 });
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: `err-${Date.now()}`,
+            role: "assistant",
+            isAiError: true,
+            status,
+            errorCode: code,
+            errorDetail,
+            created_at: new Date().toISOString(),
+          },
+        ]);
+        return;
       }
 
       const data = await res.json();
@@ -282,13 +336,14 @@ export default function Chat({
       }
     } catch (err) {
       console.error("Chat error:", err);
-      toast.error(err.message || "AI service error. Check connection or OpenRouter key.");
+      toast.error(err.message || "AI service connection error.");
       setMessages((prev) => [
         ...prev,
         {
           id: `err-${Date.now()}`,
           role: "assistant",
-          content: err.message || "Encountered an issue communicating with the AI model. Please verify your connection or try again.",
+          isAiError: true,
+          errorDetail: err.message || "Failed to communicate with the server. Please check your network connection and try again.",
           created_at: new Date().toISOString(),
         },
       ]);
@@ -375,7 +430,7 @@ export default function Chat({
           <div className="flex items-start gap-2 text-xs text-amber-300">
             <AlertCircle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
             <div className="space-y-1">
-              <span className="font-semibold block text-white">Daily Free Quota Reached</span>
+              <span className="font-semibold block text-white">Daily Free Quota Reached (30/30)</span>
               <p className="text-[#94a3b8] leading-relaxed">
                 You've reached the free limit of 30 server AI calls for today. Connect your personal API key to unlock unlimited requests.
               </p>
@@ -389,6 +444,112 @@ export default function Chat({
               >
                 <Key className="w-3.5 h-3.5" />
                 <span>Configure Keys in Settings</span>
+              </button>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    if (msg.isCreditError) {
+      return (
+        <div className="p-3.5 bg-red-950/20 border border-red-900/40 rounded-lg space-y-3">
+          <div className="flex items-start gap-2.5 text-xs text-red-200">
+            <AlertTriangle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+            <div className="space-y-1.5 w-full">
+              <div className="flex items-center justify-between">
+                <span className="font-semibold text-white">Insufficient AI Provider Credits (402)</span>
+                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-red-950/60 border border-red-800/40 text-red-300">
+                  OpenRouter
+                </span>
+              </div>
+              <p className="text-[#cbd5e1] leading-relaxed text-[12px]">
+                Your OpenRouter credit balance is depleted, or the requested token allocation exceeds your remaining balance.
+              </p>
+              {msg.errorDetail && (
+                <div className="p-2 bg-[#0d0e11] border border-red-900/30 rounded text-[11px] font-mono text-red-300/90 break-words">
+                  {msg.errorDetail}
+                </div>
+              )}
+            </div>
+          </div>
+          <div className="pt-2 border-t border-red-900/30 flex flex-wrap items-center justify-end gap-2">
+            <a
+              href="https://openrouter.ai/settings/credits"
+              target="_blank"
+              rel="noreferrer"
+              className="px-2.5 py-1.5 rounded bg-[#181b22] hover:bg-[#232732] text-[#94a3b8] hover:text-white border border-[#2e3442] text-[11px] font-medium flex items-center gap-1.5 transition-colors"
+            >
+              <span>Add OpenRouter Credits</span>
+              <ExternalLink className="w-3 h-3 text-[#64748b]" />
+            </a>
+            {onOpenSettings && (
+              <button
+                onClick={onOpenSettings}
+                className="px-3 py-1.5 rounded bg-[#38bdf8] hover:bg-[#7bd0ff] text-[#00354a] font-semibold text-xs flex items-center gap-1.5 transition-colors shadow-sm"
+              >
+                <Key className="w-3.5 h-3.5" />
+                <span>Switch to Free Gemini in Settings</span>
+              </button>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    if (msg.isTimeoutError) {
+      return (
+        <div className="p-3.5 bg-amber-950/20 border border-amber-900/40 rounded-lg space-y-2.5">
+          <div className="flex items-start gap-2.5 text-xs text-amber-200">
+            <Clock className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+            <div className="space-y-1">
+              <span className="font-semibold text-white">AI Request Timed Out (504)</span>
+              <p className="text-[#cbd5e1] leading-relaxed text-[12px]">
+                The upstream AI model took longer than 25 seconds to generate a response.
+              </p>
+              <p className="text-[11px] text-[#94a3b8]">
+                <strong>Tip:</strong> Try deselecting large document attachments or asking a more focused question to reduce the token context size.
+              </p>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    if (msg.isAiError) {
+      return (
+        <div className="p-3.5 bg-red-950/20 border border-red-900/40 rounded-lg space-y-2.5">
+          <div className="flex items-start gap-2.5 text-xs text-red-200">
+            <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+            <div className="space-y-1.5 w-full">
+              <div className="flex items-center justify-between">
+                <span className="font-semibold text-white">
+                  AI Service Error {msg.status ? `(HTTP ${msg.status})` : ""}
+                </span>
+                {msg.errorCode && (
+                  <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-red-950/60 border border-red-800/40 text-red-300">
+                    {msg.errorCode}
+                  </span>
+                )}
+              </div>
+              <p className="text-[#cbd5e1] leading-relaxed text-[12px]">
+                The AI service was unable to fulfill your request.
+              </p>
+              {msg.errorDetail && (
+                <div className="p-2 bg-[#0d0e11] border border-red-900/30 rounded text-[11px] font-mono text-red-300/90 break-words">
+                  {msg.errorDetail}
+                </div>
+              )}
+            </div>
+          </div>
+          {onOpenSettings && (
+            <div className="pt-2 border-t border-red-900/30 flex justify-end">
+              <button
+                onClick={onOpenSettings}
+                className="px-3 py-1.5 rounded bg-[#38bdf8] hover:bg-[#7bd0ff] text-[#00354a] font-semibold text-xs flex items-center gap-1.5 transition-colors shadow-sm"
+              >
+                <Key className="w-3.5 h-3.5" />
+                <span>Verify API Keys in Settings</span>
               </button>
             </div>
           )}
@@ -502,7 +663,46 @@ export default function Chat({
         }),
       });
 
-      if (!res.ok) throw new Error("Failed to regenerate response");
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        const status = res.status;
+        const code = errData.code || "";
+        const errorDetail = errData.error || "Failed to regenerate AI response";
+
+        if (status === 429 || code === "QUOTA_EXCEEDED") {
+          toast.error("Daily free AI limit reached (30/30 calls). Add your own API key in Settings.", { duration: 6000 });
+          setMessages((prev) => [
+            ...prev,
+            { id: `err-${Date.now()}`, role: "assistant", isQuotaError: true, errorDetail, created_at: new Date().toISOString() },
+          ]);
+          return;
+        }
+
+        if (status === 402 || code === "INSUFFICIENT_CREDITS") {
+          toast.error("AI Provider credits depleted. Top up OpenRouter or switch to free Gemini in Settings.", { duration: 6000 });
+          setMessages((prev) => [
+            ...prev,
+            { id: `err-${Date.now()}`, role: "assistant", isCreditError: true, errorDetail, created_at: new Date().toISOString() },
+          ]);
+          return;
+        }
+
+        if (status === 504 || code === "TIMEOUT") {
+          toast.error("AI request timed out. Try asking with fewer attached documents.", { duration: 5000 });
+          setMessages((prev) => [
+            ...prev,
+            { id: `err-${Date.now()}`, role: "assistant", isTimeoutError: true, errorDetail, created_at: new Date().toISOString() },
+          ]);
+          return;
+        }
+
+        toast.error(`AI Error (${status}): ${errorDetail.slice(0, 80)}`, { duration: 5000 });
+        setMessages((prev) => [
+          ...prev,
+          { id: `err-${Date.now()}`, role: "assistant", isAiError: true, status, errorCode: code, errorDetail, created_at: new Date().toISOString() },
+        ]);
+        return;
+      }
 
       const data = await res.json();
       const parsed = parseMessageContent(data.content);
@@ -521,7 +721,17 @@ export default function Chat({
       setMessages((prev) => [...prev, aiMsgObj]);
     } catch (err) {
       console.error("Regenerate error:", err);
-      toast.error("Failed to regenerate AI response");
+      toast.error(err.message || "Failed to regenerate AI response");
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `err-${Date.now()}`,
+          role: "assistant",
+          isAiError: true,
+          errorDetail: err.message || "Failed to communicate with the server.",
+          created_at: new Date().toISOString(),
+        },
+      ]);
     } finally {
       setIsLoading(false);
     }

@@ -244,15 +244,18 @@ ${combinedFileText}
     });
   } catch (error) {
     console.error("Chat Error:", error);
-    if (error.statusCode === 429 || error.errorCode === "QUOTA_EXCEEDED") {
+    const status = error.status || error.statusCode || 500;
+    if (status === 429 || error.code === "QUOTA_EXCEEDED" || error.errorCode === "QUOTA_EXCEEDED") {
       return res.status(429).json({
         error: error.message,
         code: "QUOTA_EXCEEDED",
       });
     }
-    return res.status(error.statusCode || 500).json({
-      error: error.message || "AI failed to respond",
-      code: error.errorCode || "AI_ERROR",
+    const message = error.error?.message || error.message || "AI failed to respond";
+    const code = error.code || error.errorCode || (status === 402 ? "INSUFFICIENT_CREDITS" : "AI_ERROR");
+    return res.status(status).json({
+      error: message,
+      code,
     });
   }
 });
