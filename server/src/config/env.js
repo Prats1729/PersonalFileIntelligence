@@ -103,7 +103,10 @@ function loadAndValidateEnv() {
     errors.push("OCR_BATCH_SIZE must be a positive integer.");
   }
 
-  const OCR_STALE_TIMEOUT_MINUTES = parseInt(process.env.OCR_STALE_TIMEOUT_MINUTES || "5", 10);
+  const OCR_STALE_TIMEOUT_MINUTES = parseInt(
+    process.env.OCR_STALE_TIMEOUT_MINUTES || (NODE_ENV === "production" ? "5" : "2"),
+    10
+  );
   if (isNaN(OCR_STALE_TIMEOUT_MINUTES) || OCR_STALE_TIMEOUT_MINUTES <= 0) {
     errors.push("OCR_STALE_TIMEOUT_MINUTES must be a positive integer.");
   }

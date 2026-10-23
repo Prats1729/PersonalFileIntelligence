@@ -1858,16 +1858,29 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
                         </div>
                       )}
 
+                      {(selectedFile.status === "processing" || selectedFile.ocr_status === "processing") && (
+                        <div className="p-2 mb-1.5 bg-[#38bdf8]/10 border border-[#38bdf8]/30 rounded font-mono text-[11px] text-[#38bdf8] flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <Loader2 className="w-3.5 h-3.5 animate-spin text-[#38bdf8]" />
+                            <span>
+                              {selectedFile.pages_total
+                                ? `Processing OCR (${selectedFile.pages_done || 0}/${selectedFile.pages_total} pages)...`
+                                : "Extracting text layer and chunks in background..."}
+                            </span>
+                          </div>
+                          {selectedFile.pages_total && (
+                            <span className="text-[10px] opacity-75 font-mono">
+                              {Math.round(((selectedFile.pages_done || 0) / selectedFile.pages_total) * 100)}%
+                            </span>
+                          )}
+                        </div>
+                      )}
+
                       {selectedFile.extracted_text ? (
                         <div className="p-2.5 bg-[#0d0e11] border border-[#232732] rounded font-mono text-[11px] text-[#bdc8d1] leading-relaxed max-h-48 overflow-y-auto custom-scrollbar select-text whitespace-pre-wrap">
                           {selectedFile.extracted_text}
                         </div>
-                      ) : selectedFile.status === "processing" || selectedFile.ocr_status === "processing" ? (
-                        <div className="p-4 bg-[#0d0e11] border border-dashed border-[#232732] rounded font-mono text-[11px] text-blue-400 flex flex-col items-center justify-center gap-2 text-center">
-                          <Loader2 className="w-4 h-4 animate-spin text-blue-400" />
-                          <span>{selectedFile.pages_total ? `Processing OCR (${selectedFile.pages_done || 0}/${selectedFile.pages_total} pages)...` : "Extracting text layer and chunks in background..."}</span>
-                        </div>
-                      ) : (
+                      ) : !(selectedFile.status === "processing" || selectedFile.ocr_status === "processing") ? (
                         <div className="p-4 bg-[#0d0e11] border border-dashed border-[#232732] rounded font-mono text-[11px] text-[#64748b] flex flex-col items-center justify-center gap-2.5 text-center">
                           <span>No extracted text layer detected yet.</span>
                           <button
@@ -1888,7 +1901,7 @@ export default function Workspace({ user, onLogout, isLoggingOut }) {
                             )}
                           </button>
                         </div>
-                      )}
+                      ) : null}
                     </div>
 
                     {/* File Specifications Grid */}
