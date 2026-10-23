@@ -150,3 +150,4 @@ process.on("uncaughtException", (err) => {
 process.on("unhandledRejection", (reason) => {
   logger.error({ reason }, "Unhandled Promise Rejection detected in process");
 });
+// Watcher reload trigger
