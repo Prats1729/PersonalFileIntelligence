@@ -54,6 +54,7 @@ export const httpLogger = pinoHttp({
     ignore: (req) =>
       req.url === "/healthz" ||
       req.url === "/readyz" ||
+      req.url === "/api/health" ||
       (req.method === "GET" && req.url === "/api/files"),
   },
 });
