@@ -126,9 +126,9 @@ export async function extractWithGeminiVision(buffer, mimeType, userId = null, c
   }
 
   const candidateModels = [
-    "gemini-2.0-flash",
-    "gemini-1.5-flash",
-    "gemini-1.5-flash-8b",
+    "gemini-3.5-flash",
+    "gemini-3-flash-preview",
+    "gemini-3.8-flash",
   ];
   const base64Data = buffer.toString("base64");
   const promptText =

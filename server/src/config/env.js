@@ -93,7 +93,7 @@ function loadAndValidateEnv() {
     errors.push("MAX_OCR_PAGES_PER_FILE must be a positive integer.");
   }
 
-  const OCR_PAGE_TIMEOUT_MS = parseInt(process.env.OCR_PAGE_TIMEOUT_MS || "15000", 10);
+  const OCR_PAGE_TIMEOUT_MS = parseInt(process.env.OCR_PAGE_TIMEOUT_MS || "25000", 10);
   if (isNaN(OCR_PAGE_TIMEOUT_MS) || OCR_PAGE_TIMEOUT_MS <= 0) {
     errors.push("OCR_PAGE_TIMEOUT_MS must be a positive integer.");
   }
